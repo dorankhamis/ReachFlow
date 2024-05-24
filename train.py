@@ -40,10 +40,18 @@ cfg = SimpleNamespace(
     val_len = 25
 )
 
-def sample_event(flood_event_df, vwc_quantiles=None):
-    event = flood_event_df.sample(1).iloc[0]
-    rid = event.id
-    date_range = pd.date_range(start=event.FlowStartDate, end=event.FlowEndDate, freq='15min')
+def sample_event(flood_event_df, vwc_quantiles=None,
+                 event=None, rid=None, date_range=None):
+    if (event is None) and (date_range is None):
+        event = flood_event_df.sample(1).iloc[0]
+        rid = event.id
+        date_range = pd.date_range(start=event.FlowStartDate, end=event.FlowEndDate, freq='15min')
+    elif not (event is None):
+        rid = event.id
+        date_range = pd.date_range(start=event.FlowStartDate, end=event.FlowEndDate, freq='15min')
+    elif not (date_range is None) and not (rid is None):
+        event = None
+    
     river_obj = load_event_data(rid, date_range, vwc_quantiles=vwc_quantiles)
     return river_obj, rid, date_range, event
 
@@ -194,3 +202,23 @@ if __name__=="__main__":
         checkpoint=checkpoint,
         device=device
     )
+
+    if False:
+        
+        ## tests
+        
+        river_obj, rid, date_range, event = sample_event(train_events, vwc_quantiles)
+        
+        # plot flows and NRFA stations
+        river_obj.plot_flows(river_obj.flow_est, date_range[1], scaler=1.8, add_min=0.1)
+        
+        # plot catchments on a 1km grid
+        import xarray as xr        
+        xygrid = xr.load_dataset(hj_base + "/ancillaries/chess_landfrac.nc",
+                                 decode_coords="all")
+        elev_map = xr.load_dataset(hj_base + "/ancillaries/uk_ihdtm_topography+topoindex_1km.nc",
+                                   decode_coords="all")
+        xygrid['elev'] = (("y", "x"), elev_map.elev.data)
+        xygrid.elev.values[np.isnan(xygrid.elev.values)] = 0
+        
+        river_obj.plot_river(grid=xygrid.elev, stations=False)

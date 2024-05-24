@@ -63,6 +63,7 @@ Upstream flows to "dilute" pollutants/nutrients:
 ## load individual river reaches
 hjflood_base = "/gws/nopw/j04/hydro_jules/data/uk/flood_events/"
 reaches_dir = hjflood_base + "/reach_data/"
+save_rivers_dir = reaches_dir + "/river_objects/"
 segments = gpd.read_parquet(reaches_dir + "/segments_gb.parquet")
 
 ## load cumulative catchment descriptors and boundaries
@@ -95,22 +96,33 @@ end_points = segments[segments.tidal==True]
 nonoverlap_desc = np.setdiff1d(draincells.columns, desc_names.PROPERTY_ITEM)
 overlap_desc = np.intersect1d(draincells.columns, desc_names.PROPERTY_ITEM)
 
-''' add in baseflow index to this list?? QBFI 
-will have to re-generate river objects... '''
+
 standard_descs = [ # that we can simply treat by multiplying by area
-    'QB19', # BFIHOST19
+    'QB19', # BFIHOST19 [0,1]
     #'QALT', # Altitude (mean) ---- instead use mean slope
-    'QUEX', # URBEXT1990 Urban extent
-    'QUE2', # URBEXT2000 Urban extent
-    'QFPX', # Mean flood plain extent
-    'QFPD', # Mean flood plain depth
-    'QPRW', # PROPWET Proportion of time soils are wet
-    'QSPR', # Standard percentage runoff from HOST
-    #'QDPB', # DPLBAR Mean drainage path length ---- this needs to be calculated differently,
-    # or ignored as just a different measure of catchment size
-    'QDPS', # DPSBAR Mean drainage path slope
-    'QFAR'  # FARL Flood attenuation by reservoirs and lakes
+    'QUEX', # URBEXT1990 Urban extent, [0,1]
+    'QUE2', # URBEXT2000 Urban extent, [0,1]
+    'QFPX', # Mean flood plain extent, [0,1]
+    'QFPD', # Mean flood plain depth in a 100-year event, >0 (questionable utility)
+    'QPRW', # PROPWET Proportion of time soils are wet, [0,1]
+    'QSPR', # Standard percentage runoff from HOST, % [0,100]
+    #'QDPL', # DPLBAR Mean drainage path length ---- this needs to be calculated differently,
+    # can calculate easily using distance between x,y of each point and drainage cell 
+    'QDPS', # DPSBAR Mean drainage path slope, m/km ~ 0--400
+    'QFAR'  # FARL Flood attenuation by reservoirs and lakes, [0,1]
 ]
+print(desc_names[desc_names.PROPERTY_ITEM.isin(np.setdiff1d(overlap_desc, standard_descs))])
+print(desc_names[desc_names.PROPERTY_ITEM.isin(np.intersect1d(overlap_desc, standard_descs))])
+
+'''
+calculated desc:
+    ICAR: [0, ~20, but small number up to 250]
+    REACH_LENGTH: [50, ~10000, but small number up to 40000]
+    REACH_SLOPE: [0, ~35] (check for negatives due to rounding)
+    CCAR: [3, ~2000, but some up to 10000]
+    QDPB: to calculate
+    DRAINAGE_DENSITY: to calculate
+'''
 
 hgb_n = [col for col in draincells if col.startswith('HGB')] # hydrogeology bedrock
 hgs_n = [col for col in draincells if col.startswith('HGS')] # hydrogeology superficial
@@ -120,16 +132,16 @@ desc_to_use = standard_descs + hgb_n + hgs_n + lc_n
 # threshold ccar to simplify catchments
 ccar_threshold = 3
 end_points = end_points[end_points.ccar >= ccar_threshold]
+small_segments = segments[segments.ccar < ccar_threshold]
 segments = segments[segments.ccar >= ccar_threshold]
 boundaries = boundaries[boundaries.ccar >= ccar_threshold]
 
-save_rivers_dir = reaches_dir + "/river_objects/"
 Path(save_rivers_dir).mkdir(parents=True, exist_ok=True)
 
 NEW_RIVERS = False
 if NEW_RIVERS:
     build_all_rivers(end_points, segments, draincells, boundaries,
-                     desc_to_use, save_rivers_dir)
+                     small_segments, desc_to_use, save_rivers_dir)
 
 
 ADD_NRFA_STATIONS = False
@@ -137,8 +149,7 @@ if ADD_NRFA_STATIONS:
     add_nrfa_stations_to_rivers(nrfa_station_metadata, draincells, save_rivers_dir)
     
 # river_id = 617 looks like a good simple test catchment with a single nrfa station
-# river_id = 15340 a much more complex system with multiple stations that might need smaller reaches stomping
-
+# river_id = 15340 a much more complex system with multiple stations
 
 ADD_WEIGHT_MATRICES = False
 if ADD_WEIGHT_MATRICES:
@@ -146,17 +157,18 @@ if ADD_WEIGHT_MATRICES:
     # save the calculated weight matrices
     pass
 
-
-## create map from nrfa station to river id
-gauge_river_map = gpd.sjoin_nearest(
-    nrfa_station_metadata,
-    (boundaries[boundaries.id.isin(segments.query("tidal==True").id)]
-        [['id', 'dc_id', 'xout', 'yout', 'east', 'north', 'geometry']]
-    ),
-    distance_col="distance"
-).query('distance==0').drop('distance', axis=1)
-gauge_river_map = gauge_river_map[['nrfa_id', 'id',  'dc_id', 'name', 'river', 'location', 'xout', 'yout']]
-gauge_river_map.reset_index(drop=True).to_csv(hjflood_base + '/station_to_river_map.csv', index=False)
+MATCH_GAUGES_TO_REACHES = False
+if MATCH_GAUGES_TO_REACHES:
+    ## create map from nrfa station to river id
+    gauge_river_map = gpd.sjoin_nearest(
+        nrfa_station_metadata,
+        (boundaries[boundaries.id.isin(segments.query("tidal==True").id)]
+            [['id', 'dc_id', 'xout', 'yout', 'east', 'north', 'geometry']]
+        ),
+        distance_col="distance"
+    ).query('distance==0').drop('distance', axis=1)
+    gauge_river_map = gauge_river_map[['nrfa_id', 'id',  'dc_id', 'name', 'river', 'location', 'xout', 'yout']]
+    gauge_river_map.reset_index(drop=True).to_csv(hjflood_base + '/station_to_river_map.csv', index=False)
 
 
 '''
@@ -165,36 +177,211 @@ gauge_river_map.reset_index(drop=True).to_csv(hjflood_base + '/station_to_river_
 ##############################
 '''
 
-### test gathering all data for a catchment and specific date range
+if False:
+    c_feats = [
+        'QB19',
+        'QUEX', # merging QUEX and QUE2
+        'QDPS',
+        'ICAR',
+        'QDPL', # mean drainage path length
+        'DRAINAGE_DENSITY', # channel length / catchment area
+        'HGS_XX',
+        'HGB_XX',
+        'LC_XX'
+    ]
+    r_feats = [
+        'REACH_LENGTH',
+        'REACH_SLOPE',
+        'CCAR' # as some measure of cross-sectional area of channel?
+    ]
+    
+    ## normalisation
+    norm_dict = dict(
+        QB19 = 1, # [0,1]
+        QUEX = 1, # [0,1]
+        QUE2 = 1, # [0,1]
+        QDPS = 100, # [0.022517, 738.293548], med = 78.3
+        ICAR = 25, # [0.002500, 264.972500], med = 2.725000
+        REACH_LENGTH = 1000, # [50 , 44808.178182], med = 1257.106781
+        REACH_SLOPE = 10, # [0, 34.779979], med = 0.527106
+        CCAR = 1000, # [3.00000, 9971.32250], med = 12.28125
+        QDPL = # [7.071068, 18064.327412], med = 1519.811097
+        DRAINAGE_DENSITY = ... # [0.002611, 28.284271], med = 0.943428
+        PRECIP = 100
+    )
 
-gear_dir = "/gws/nopw/j04/ceh_generic/netzero/downscaling/ceh-gear/"
-sm_data_dir = "/gws/nopw/j04/hydro_jules/data/uk//soil_moisture_map/output/netcdf/SM/"
-flow_dir = hjflood_base + "/15min_flow_data/"
 
-## choose catchment and load river object
-rid = 59387 # 15340
-river_obj = River()
-river_obj.load(save_rivers_dir, rid)
+if False:
+    ## loading all rivers to find normalisations of all static quantities
+    import os
+    all_river_ids = next(os.walk(save_rivers_dir))[1]
+    all_river_ids = [int(rid) for rid in all_river_ids]
 
-## define date range
-date_range = pd.date_range(start="1995/04/08 11:45:00", end="1995/04/10 13:15:00", freq='15min')
+    all_cds_increm = pd.DataFrame()
+    all_cds_cumul = pd.DataFrame()
+    for i,rid in enumerate(all_river_ids):
+        print(i)
+        river_obj = River()
+        river_obj.load(save_rivers_dir, rid)
+        all_cds_increm = pd.concat([all_cds_increm, river_obj.cds_increm], axis=0)
+        all_cds_cumul = pd.concat([all_cds_cumul, river_obj.cds_cumul], axis=0)
 
-## load flow observations
-river_obj.load_flow_data(date_range, flow_dir) # creates river_obj.flow_data
+    nan_inds = np.where(np.isnan(all_cds_increm.values))
+    # we also have nans in cumulative descriptors...
 
-# generate initial flow condition across entire river network
-river_obj.generate_teacher_forcing_flows() # creates river_obj.flow_est
+    to_norm_cds = [
+        'QDPS',
+        'ICAR',
+        'QDPL',
+        'DRAINAGE_DENSITY',
+        'REACH_LENGTH',
+        'REACH_SLOPE'
+    ]
+    cd_dists = all_cds_increm.quantile(q=np.linspace(0,1,201))[to_norm_cds]
+    cd_dists = pd.concat([cd_dists, all_cds_cumul[['CCAR']].quantile(q=np.linspace(0,1,201))], axis=1)
+    cd_dists.index.name = "quantile"
+    cd_dists.reset_index().to_csv(reaches_dir + '/catchment_descriptor_quantiles.csv', index=False)
+    
+    def moving_average(a, n=2):
+        ret = np.cumsum(a, dtype=float)
+        ret[n:] = ret[n:] - ret[:-n]
+        return ret[n - 1:] / n
+    
+    cd_dist_path = reaches_dir + '/descriptor_distributions/'
+    Path(cd_dist_path).mkdir(exist_ok=True, parents=True)
+    
+    for name in to_norm_cds:
+        # calculating pdf and cdf
+        print(name)
+        count, bins_count = np.histogram(all_cds_increm[name].dropna(), bins=201) 
+        bin_centres = moving_average(bins_count, n=2)
+        
+        pdf = count / sum(count) 
+        #plt.plot(bin_centres, pdf); plt.show()
 
-## load precip
-river_obj.load_precip_data(date_range, gear_dir) # populates river_obj.precip_data
-# what about antecedent precip?
+        cdf = np.cumsum(pdf)
+        #plt.plot(bin_centres, cdf); plt.show()
+        
+        (pd.DataFrame({'bin_centre':bin_centres, 'pdf':pdf, 'cdf':cdf})
+            .to_csv(cd_dist_path + f'/{name}_dist.csv', index=False)
+        )
 
-## load SM
-vwc_quantiles = rioxarray.open_rasterio(sm_data_dir + '/vwc_quantiles.nc')
-river_obj.load_soil_wetness(date_range, vwc_quantiles, sm_data_dir)  # populates river_obj.soil_wetness_data
+    name = 'CCAR'
+    count, bins_count = np.histogram(all_cds_cumul[name].dropna(), bins=201) 
+    bin_centres = moving_average(bins_count, n=2)
+    
+    pdf = count / sum(count) 
+    #plt.plot(bin_centres, pdf); plt.show()
 
-## approximate land cover from 1990 and 2015 values
-river_obj.calculate_lc_for_event()
+    cdf = np.cumsum(pdf)
+    #plt.plot(bin_centres, cdf); plt.show()
+    
+    (pd.DataFrame({'bin_centre':bin_centres, 'pdf':pdf, 'cdf':cdf})
+        .to_csv(cd_dist_path + f'/{name}_dist.csv', index=False)
+    )
+
+
+if False:
+    import os
+    all_river_ids = next(os.walk(save_rivers_dir))[1]
+    all_river_ids = [int(rid) for rid in all_river_ids]
+    
+    # find rivers wit whacky descriptors
+    for i,rid in enumerate(all_river_ids):
+        print(i)
+        river_obj = River()
+        river_obj.load(save_rivers_dir, rid)
+        if river_obj.cds_increm.max().QB19>1 or river_obj.cds_increm.min().QB19<0:
+            break
+    
+    badid = 107749 # 124122
+    paper_trail = [badid]
+    tidal = False
+    nextid = segments.at[badid, 'dwn_id']
+    while not tidal:
+        dwnid = segments.at[nextid, 'dwn_id']
+        if dwnid == nextid:
+            tidal = True
+        nextid = dwnid
+        if not tidal:
+            paper_trail.append(nextid)
+        
+    bad_rid = dwnid
+
+    from river_utils import *
+    ii = paper_trail[-1]
+    reach_level = 0
+    cur_river = pd.concat([
+        segments[segments.id==ii].assign(reach_level = reach_level),
+        segments[(segments.dwn_id==ii) & (segments.id!=ii)].assign(reach_level = reach_level + 1)],
+        axis = 0
+    )
+    sub_river = cur_river[cur_river.id != cur_river.dwn_id]
+
+    this_river_obj = River(ii, segments[segments.id==ii].dc_id.values[0])
+    this_river_obj.network = cur_river.copy()
+
+    this_river_obj.catchment_boundaries[ii] = calculate_incremental_catchment_boundary(boundaries, ii)
+
+    this_river_obj.catchment_descriptors[ii] = calculate_incremental_catchment_descriptors(
+        draincells,
+        segments,
+        ii,
+        desc_to_use,
+        this_river_obj.catchment_boundaries[ii]['increm']
+    )
+
+    reach_level += 1
+
+    for k in paper_trail[:-1][::-1]:
+        river_branch = segments[segments.dwn_id==k].assign(reach_level = reach_level + 1)
+        
+        # add new network members and new incremental catchment descs
+        this_river_obj.network = pd.concat([this_river_obj.network, river_branch])            
+        
+        this_river_obj.catchment_boundaries[k] = calculate_incremental_catchment_boundary(boundaries, k)
+        
+        this_river_obj.catchment_descriptors[k] = calculate_incremental_catchment_descriptors(
+            draincells,
+            segments,
+            k,
+            desc_to_use,
+            this_river_obj.catchment_boundaries[k]['increm']
+        )
+        
+        reach_level += 1
+
+
+if False:
+    ### test gathering all data for a catchment and specific date range
+    gear_dir = "/gws/nopw/j04/ceh_generic/netzero/downscaling/ceh-gear/"
+    sm_data_dir = "/gws/nopw/j04/hydro_jules/data/uk//soil_moisture_map/output/netcdf/SM/"
+    flow_dir = hjflood_base + "/15min_flow_data/"
+
+    ## choose catchment and load river object
+    rid = 59387 # 15340
+    river_obj = River()
+    river_obj.load(save_rivers_dir, rid)
+
+    ## define date range
+    date_range = pd.date_range(start="1995/04/08 11:45:00", end="1995/04/10 13:15:00", freq='15min')
+
+    ## load flow observations
+    river_obj.load_flow_data(date_range, flow_dir) # creates river_obj.flow_data
+
+    # generate initial flow condition across entire river network
+    river_obj.generate_teacher_forcing_flows() # creates river_obj.flow_est
+
+    ## load precip
+    river_obj.load_precip_data(date_range, gear_dir) # populates river_obj.precip_data
+    # what about antecedent precip?
+
+    ## load SM
+    vwc_quantiles = rioxarray.open_rasterio(sm_data_dir + '/vwc_quantiles.nc')
+    river_obj.load_soil_wetness(date_range, vwc_quantiles, sm_data_dir)  # populates river_obj.soil_wetness_data
+
+    ## approximate land cover from 1990 and 2015 values
+    river_obj.calculate_lc_for_event()
 
 if False:
     # plot line segments with flow as line thickness
@@ -283,13 +470,125 @@ if False:
     river_obj.load(save_rivers_dir, rid)
 
     date_range = pd.date_range(start="1995/04/08 11:45:00", end="1995/04/10 13:15:00", freq='15min')
+
+    ## load flow observations
+    river_obj.load_flow_data(date_range, flow_dir) # creates river_obj.flow_data
+
+    # generate initial flow condition across entire river network
+    river_obj.generate_teacher_forcing_flows() # creates river_obj.flow_est
+
+    ## load precip
+    river_obj.load_precip_data(date_range, gear_dir) # populates river_obj.precip_data
+    # what about antecedent precip?
+
+    ## load SM
+    if vwc_quantiles is None:
+        vwc_quantiles = rioxarray.open_rasterio(sm_data_dir + '/vwc_quantiles.nc')
         
-    a1 = time.time()
-    river_obj.precip_parent_bounds = {}
-    river_obj.weight_matrices = {}
-    river_obj.load_precip_data(date_range, gear_dir)
-    b1 = time.time()
-    precip1 = river_obj.precip_data.copy()
+    river_obj.load_soil_wetness(date_range, vwc_quantiles, sm_data_dir)  # populates river_obj.soil_wetness_data
+
+    ## approximate land cover from 1990 and 2015 values
+    river_obj.calculate_lc_for_event()
+
+    # testing plotting catchment average/grid things
+    from matplotlib.path import Path
+    from matplotlib.patches import PathPatch
+    from matplotlib.collections import PatchCollection
+
+
+    # Plots a Polygon to pyplot `ax`
+    def plot_polygon(ax, poly, **kwargs):
+        path = Path.make_compound_path(
+            Path(np.asarray(poly.exterior.coords)[:, :2]),
+            *[Path(np.asarray(ring.coords)[:, :2]) for ring in poly.interiors])
+
+        patch = PathPatch(path, **kwargs)
+        collection = PatchCollection([patch], **kwargs)
+        
+        ax.add_collection(collection, autolim=True)
+        ax.autoscale_view()
+        return collection
+
+    fig, ax = plt.subplots()
+    cm = plt.get_cmap('viridis')
+    num_colours = river_obj.network.reach_level.max() + 1
+    
+    [plt.plot(*river_obj.network.iloc[i].geometry.xy,
+              c=cm(river_obj.network.iloc[i].reach_level/num_colours),
+              linewidth=1.2) 
+        for i in range(river_obj.network.shape[0])]
+
+    [plot_polygon(ax, river_obj.boundaries_increm.loc[i],
+                  facecolor=plt.cm.Blues(
+                    1.5*river_obj.precip_data[i].at[date_range[-3], 'precip'])
+                 ) for i in river_obj.network.id]
+
+    plt.plot(*river_obj.boundaries_cumul.loc[river_obj.river_id].exterior.xy,
+             '--', c='k', linewidth=1.5, alpha=0.8)
+    plt.show()
+
+
+    # now load up the gridded version and plot the same thing
+    if str(date_range[0])[14:16]=='00':
+        start_date_hr = pd.to_datetime(str(date_range[0])[:13] + ':00:00', format="%Y-%m-%d %H:%M:%S")
+    else:
+        pushed_time = date_range[0] + pd.to_timedelta("1H")
+        start_date_hr = pd.to_datetime(str(pushed_time)[:13] + ':00:00', format="%Y-%m-%d %H:%M:%S")
+    if str(date_range[-1])[14:16]=='00':
+        end_date_hr = pd.to_datetime(str(date_range[-1])[:13] + ':00:00', format="%Y-%m-%d %H:%M:%S")
+    else:
+        pushed_time = date_range[-1] + pd.to_timedelta("1H")
+        end_date_hr = pd.to_datetime(str(pushed_time)[:13] + ':00:00', format="%Y-%m-%d %H:%M:%S")
+        
+    dates_hr = pd.date_range(start_date_hr, end_date_hr, freq="H")
+    time_index = []    
+    res = 1000 # 1km
+    yy = date_range[-3].year
+    mm = date_range[-3].month            
+    cds = rioxarray.open_rasterio(gear_dir + f'/{yy}/CEH-GEAR-1hr-v2_{yy}{zeropad_strint(mm)}.nc',
+                                  decode_coords="all")
+    rfd = cds[2].drop_vars(['lat', 'lon', 'min_dist', 'stat_disag'])
+    rfd['x'] = rfd.x + res/2
+    rfd['y'] = rfd.y + res/2
+    del(cds)
+    
+    rfd['time'] = rfd.time.astype("datetime64[ns]")
+    rfd = rfd.sel(time = rfd.time.isin(dates_hr))
+    these_times = pd.to_datetime(rfd['time'].values)
+    if len(time_index)==0:
+        time_index = these_times
+    else:
+        time_index = np.hstack([time_index, these_times])
+    
+    if len(river_obj.precip_parent_bounds.keys())==0:                    
+        big_xy_bounds = river_obj.boundaries_cumul.loc[river_obj.river_id].bounds # (minx, miny, maxx, maxy)
+        bx_inds = np.intersect1d(np.where((rfd.x + res/2) >= big_xy_bounds[0]),
+                                 np.where((rfd.x - res/2) <= big_xy_bounds[2]))
+        by_inds = np.intersect1d(np.where((rfd.y + res/2) >= big_xy_bounds[1]),
+                                 np.where((rfd.y - res/2) <= big_xy_bounds[3]))
+        river_obj.precip_parent_bounds['x_inds'] = bx_inds
+        river_obj.precip_parent_bounds['y_inds'] = by_inds
+    
+    rfd_trim = rfd.isel(x=river_obj.precip_parent_bounds['x_inds'],
+                        y=river_obj.precip_parent_bounds['y_inds'])
+                        
+                        
+    rfd_trim.rainfall_amount[-1,:,:].plot(alpha=0.6, cmap='Blues')
+    cm = plt.get_cmap('viridis')
+    num_colours = river_obj.network.reach_level.max() + 1
+    [plt.plot(*river_obj.network.iloc[i].geometry.xy,
+              c=cm(river_obj.network.iloc[i].reach_level/num_colours),
+              linewidth=1.2) 
+        for i in range(river_obj.network.shape[0])]
+    [plt.plot(*river_obj.boundaries_increm.loc[i].exterior.xy, ':',
+              c=cm(river_obj.network.iloc[idx].reach_level/num_colours),
+              linewidth=0.7, alpha=0.9) 
+        for idx, i in enumerate(river_obj.network.id)]
+    # add parent cumulative catchment outline
+    plt.plot(*river_obj.boundaries_cumul.loc[river_obj.river_id].exterior.xy,
+             '--', c='k', linewidth=1.5, alpha=0.8)
+    plt.show()
+
     
     # ## Method 3: parallel computation across sub catchments?
     # import multiprocessing

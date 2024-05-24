@@ -4,9 +4,9 @@ import shutil
 import rioxarray
 from pathlib import Path
 
-######################
-## String functions ##
-######################
+#######################
+## utility functions ##
+#######################
 
 def zeropad_strint(integer):
     if integer<10:
@@ -22,7 +22,13 @@ def remove_suffix(input_string, suffix):
 def remove_prefix(input_string, prefix):
     if prefix and input_string.startswith(prefix):
         return input_string[len(prefix):]
-    return input_string    
+    return input_string
+    
+def normalise_df_simplex_subset(df, col_pattern):
+    norm_cols = [col for col in df if col.startswith(col_pattern)]
+    clipped_vals = df[norm_cols].clip(lower=0)
+    df.loc[:, norm_cols] = clipped_vals.values / clipped_vals.sum(axis=1).values[...,None]
+    return df
 
 ####################################
 ## Soil moisture netcdf functions ##

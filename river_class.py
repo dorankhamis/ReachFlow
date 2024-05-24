@@ -13,7 +13,8 @@ from pathlib import Path
 from shapely.geometry import box, Point
 from sklearn.neighbors import NearestNeighbors
 
-from utils import zeropad_strint, trim_netcdf, calculate_soil_wetness, merge_two_soil_moisture_days
+from utils import (zeropad_strint, trim_netcdf, calculate_soil_wetness,
+                   merge_two_soil_moisture_days,  normalise_df_simplex_subset)
 
 hj_base = "/gws/nopw/j04/hydro_jules/data/uk/"
 gear_dir = "/gws/nopw/j04/ceh_generic/netzero/downscaling/ceh-gear/"
@@ -78,10 +79,19 @@ class River:
         
         self.cds_increm = pd.read_parquet(this_dir + 'descriptors_increm.parquet')
         self.cds_cumul = pd.read_parquet(this_dir + 'descriptors_cumul.parquet')
+        
         # rename CCAR to ICAR in cds_increm
         if "CCAR" in self.cds_increm.columns:
             self.cds_increm = self.cds_increm.rename({"CCAR":"ICAR"}, axis=1)
         
+        # fix negatives in hydrogeography and land cover simplexes
+        self.cds_increm = normalise_df_simplex_subset(self.cds_increm, "HGB")
+        self.cds_increm = normalise_df_simplex_subset(self.cds_increm, "HGS")
+        self.cds_increm = normalise_df_simplex_subset(self.cds_increm, "LC1990")
+        self.cds_increm = normalise_df_simplex_subset(self.cds_increm, "LC2015")
+                
+        # fix negatives and large false values in non-simplex descriptors?
+                
         self.boundaries_cumul = gpd.read_file(this_dir + 'boundaries_cumul.shp').set_index('index')['geometry']
         self.boundaries_increm = gpd.read_file(this_dir + 'boundaries_increm.shp').set_index('index')['geometry']
         
@@ -271,6 +281,7 @@ class River:
             ].northing,
             'o', color='orange'
         )
+        
         # add parent cumulative catchment outline
         plt.plot(*self.boundaries_cumul.loc[self.river_id].exterior.xy,
                  '--', c='k', linewidth=1.5, alpha=0.8)
@@ -317,7 +328,7 @@ class River:
             dc_normdist = line.project(dc_point, normalized=True)
             if dc_normdist>0.5: # what about for very small reaches??
                 # distance is downstream, so invert to find distance upstream
-                if p_normdist>dc_normdist:
+                if p_normdist > dc_normdist:
                     p_normdist = 0 # at drainage cell
                 else:
                     p_normdist = 1 - p_normdist # upstream of drainage cell
@@ -606,14 +617,14 @@ class River:
         # my own hydrological aggregations
         c_agg = {
             '1':[1], # Broadleaf woodland
-            '2':[2], # Coniferous woodland
+            '2':[2], # Coniferous woodland # merge both woodlands?
             '3':[3], # Arable
             '4':[4,5,6,7], # Grassland and pasture
             '5':[8,11,19], # Wetlands
             '6':[9,10], # Shrubs
             '7':[12,15,16,17,18], # Bare soil and rock
             '8':[13], # Saltwater
-            '9':[14], # Freshwater            
+            '9':[14], # Freshwater # merge both water classes?    
             '10':[20,21] # Built-up areas and gardens
         }
         agg_1990 = []
@@ -636,10 +647,15 @@ class River:
         self.cds_increm = self.cds_increm.drop(
             [col for col in self.cds_increm if col.startswith('LC')], axis=1
         )
+        
+        indexname = self.cds_increm.index.name
+        if indexname is None:
+            indexname = 'index'
+        
         self.cds_increm = (self.cds_increm.reset_index()
-            .merge(agg_1990.reset_index(), on='index')
-            .merge(agg_2015.reset_index(), on='index')
-            .set_index('index')
+            .merge(agg_1990.reset_index(), on=indexname)
+            .merge(agg_2015.reset_index(), on=indexname)
+            .set_index(indexname)
         )
         self.lc_1990_names = [col for col in self.cds_increm if col.startswith('LC1990')]
         self.lc_2015_names = [col for col in self.cds_increm if col.startswith('LC2015')]
@@ -651,6 +667,13 @@ class River:
             (1-(2015 - mean_year)/(2015-1990)) * self.cds_increm.loc[:, self.lc_2015_names].values
         )
         self.mean_lc = pd.DataFrame(self.mean_lc, index=self.cds_increm.index)
+        
+        if mean_year > 2000:
+            mean_year = 2000
+        self.mean_urbext = (
+            (1-(mean_year - 1990)/(2000-1990)) * self.cds_increm.loc[:, ["QUEX"]].values + 
+            (1-(2000 - mean_year)/(2000-1990)) * self.cds_increm.loc[:, ["QUE2"]].values
+        )    
     
 
 def load_event_data(rid, date_range, vwc_quantiles=None):
