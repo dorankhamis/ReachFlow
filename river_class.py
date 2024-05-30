@@ -90,8 +90,6 @@ class River:
         self.cds_increm = normalise_df_simplex_subset(self.cds_increm, "LC1990")
         self.cds_increm = normalise_df_simplex_subset(self.cds_increm, "LC2015")
                 
-        # fix negatives and large false values in non-simplex descriptors?
-                
         self.boundaries_cumul = gpd.read_file(this_dir + 'boundaries_cumul.shp').set_index('index')['geometry']
         self.boundaries_increm = gpd.read_file(this_dir + 'boundaries_increm.shp').set_index('index')['geometry']
         
@@ -106,7 +104,13 @@ class River:
             pass
             
         if aggregate_landcover:
-            self.aggregate_landcover_classes()            
+            self.aggregate_landcover_classes()    
+        
+        # set names for multi-class descriptors
+        self.hgb_names = [col for col in self.cds_increm if col.startswith('HGB')]
+        self.hgs_names = [col for col in self.cds_increm if col.startswith('HGS')]
+        self.lc_1990_names = [col for col in self.cds_increm if col.startswith('LC1990')]
+        self.lc_2015_names = [col for col in self.cds_increm if col.startswith('LC2015')]
     
     def save_flow_stations(self, river_obj_dir):
         self.points_in_catchments.to_parquet(river_obj_dir + f'/{self.river_id}/flow_stations.parquet')
@@ -657,23 +661,31 @@ class River:
             .merge(agg_2015.reset_index(), on=indexname)
             .set_index(indexname)
         )
-        self.lc_1990_names = [col for col in self.cds_increm if col.startswith('LC1990')]
-        self.lc_2015_names = [col for col in self.cds_increm if col.startswith('LC2015')]
     
     def calculate_lc_for_event(self):        
         mean_year = self.precip_data[self.river_id].index.mean().year
+        if mean_year > 2015:
+            mean_year = 2015
+        elif mean_year < 1990:
+            mean_year = 1990
         self.mean_lc = (
             (1-(mean_year - 1990)/(2015-1990)) * self.cds_increm.loc[:, self.lc_1990_names].values + 
             (1-(2015 - mean_year)/(2015-1990)) * self.cds_increm.loc[:, self.lc_2015_names].values
         )
         self.mean_lc = pd.DataFrame(self.mean_lc, index=self.cds_increm.index)
+        self.lc_names = [f'LC_{zeropad_strint(int(n))}' for n in range(1, self.mean_lc.shape[1]+1)]
+        self.mean_lc.columns = self.lc_names        
         
         if mean_year > 2000:
             mean_year = 2000
+        elif mean_year < 1990:
+            mean_year = 1990
         self.mean_urbext = (
             (1-(mean_year - 1990)/(2000-1990)) * self.cds_increm.loc[:, ["QUEX"]].values + 
             (1-(2000 - mean_year)/(2000-1990)) * self.cds_increm.loc[:, ["QUE2"]].values
-        )    
+        )
+        self.mean_urbext = pd.DataFrame({'QUEX':self.mean_urbext.flatten()},
+                                        index=self.cds_increm.index)
     
 
 def load_event_data(rid, date_range, vwc_quantiles=None):

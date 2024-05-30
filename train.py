@@ -17,6 +17,37 @@ from river_class import River, load_event_data, sm_data_dir, hj_base
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+static_features = dict(
+    c_feats = [
+        'QB19', # BFIHOST19
+        'QUEX', # urban extent, merging QUEX and QUE2
+        'QDPS', # drainage path slope
+        'ICAR', # incremental catchment area
+        'QDPL', # mean drainage path length
+        'DRAINAGE_DENSITY', # channel length / catchment area
+        'HGS_XX', # superficial hydrogeology 
+        'HGB_XX', # bedrock hydrogeology
+        'LC_XX' # land cover classes, merging LC1990 and LC2015
+    ],
+    r_feats = [
+        'REACH_LENGTH',
+        'REACH_SLOPE',
+        'CCAR' # cumulative catchment area, as some proxy of cross-sectional area of channel?
+    ]
+)
+
+norm_dict = dict(
+    QDPS = 100, # [0.022517, 738.293548], med = 78.3
+    ICAR = 25, # [0.002500, 264.972500], med = 2.725000
+    REACH_LENGTH = 1000, # [50 , 44808.178182], med = 1257.106781
+    REACH_SLOPE = 5, # [0, 34.779979], med = 0.527106
+    CCAR = 100, # [3.00000, 9971.32250], med = 12.28125
+    QDPL = 1000, # [7.071068, 18064.327412], med = 1519.811097
+    DRAINAGE_DENSITY = 2, # [0.002611, 28.284271], med = 0.943428
+    PRECIP = 100,
+    FLOW = 50
+)
+
 cfg = SimpleNamespace(
     # model params
     dropout = 0.1,
@@ -37,7 +68,9 @@ cfg = SimpleNamespace(
     lr = 1e-4,
     max_epochs = 100,
     train_len = 50,
-    val_len = 25
+    val_len = 25,
+    feature_names = static_features,
+    norm_dict = norm_dict
 )
 
 def sample_event(flood_event_df, vwc_quantiles=None,
