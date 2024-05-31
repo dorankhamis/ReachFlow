@@ -96,7 +96,6 @@ end_points = segments[segments.tidal==True]
 nonoverlap_desc = np.setdiff1d(draincells.columns, desc_names.PROPERTY_ITEM)
 overlap_desc = np.intersect1d(draincells.columns, desc_names.PROPERTY_ITEM)
 
-
 standard_descs = [ # that we can simply treat by multiplying by area
     'QB19', # BFIHOST19 [0,1]
     #'QALT', # Altitude (mean) ---- instead use mean slope
@@ -167,7 +166,24 @@ if MATCH_GAUGES_TO_REACHES:
         ),
         distance_col="distance"
     ).query('distance==0').drop('distance', axis=1)
-    gauge_river_map = gauge_river_map[['nrfa_id', 'id',  'dc_id', 'name', 'river', 'location', 'xout', 'yout']]
+    gauge_river_map = gauge_river_map[['nrfa_id', 'id',  'dc_id', 'name', 'river', 'location', 'xout', 'yout']]    
+
+    # appending total basin size to the gauge mapping
+    basin_ccar = []
+    for init_id in gauge_river_map.id:
+        paper_trail = [init_id]
+        tidal = False
+        nextid = segments.at[init_id, 'dwn_id']
+        while not tidal:
+            dwnid = segments.at[nextid, 'dwn_id']
+            if dwnid == nextid:
+                tidal = True
+            nextid = dwnid
+            if not tidal:
+                paper_trail.append(nextid)
+        basin_ccar.append(segments.at[paper_trail[-1], 'ccar'])
+    
+    gauge_river_map['basin_area'] = basin_ccar
     gauge_river_map.reset_index(drop=True).to_csv(hjflood_base + '/station_to_river_map.csv', index=False)
 
 
@@ -225,6 +241,9 @@ if False:
         river_obj.load(save_rivers_dir, rid)
         all_cds_increm = pd.concat([all_cds_increm, river_obj.cds_increm], axis=0)
         all_cds_cumul = pd.concat([all_cds_cumul, river_obj.cds_cumul], axis=0)
+
+    all_cds_increm.to_parquet(reaches_dir + '/all_increm_descriptors.parquet')
+    all_cds_cumul.to_parquet(reaches_dir + '/all_cumul_descriptors.parquet')
 
     nan_inds = np.where(np.isnan(all_cds_increm.values))
     # we also have nans in cumulative descriptors...
@@ -308,48 +327,6 @@ if False:
         
     bad_rid = dwnid
 
-    from river_utils import *
-    ii = paper_trail[-1]
-    reach_level = 0
-    cur_river = pd.concat([
-        segments[segments.id==ii].assign(reach_level = reach_level),
-        segments[(segments.dwn_id==ii) & (segments.id!=ii)].assign(reach_level = reach_level + 1)],
-        axis = 0
-    )
-    sub_river = cur_river[cur_river.id != cur_river.dwn_id]
-
-    this_river_obj = River(ii, segments[segments.id==ii].dc_id.values[0])
-    this_river_obj.network = cur_river.copy()
-
-    this_river_obj.catchment_boundaries[ii] = calculate_incremental_catchment_boundary(boundaries, ii)
-
-    this_river_obj.catchment_descriptors[ii] = calculate_incremental_catchment_descriptors(
-        draincells,
-        segments,
-        ii,
-        desc_to_use,
-        this_river_obj.catchment_boundaries[ii]['increm']
-    )
-
-    reach_level += 1
-
-    for k in paper_trail[:-1][::-1]:
-        river_branch = segments[segments.dwn_id==k].assign(reach_level = reach_level + 1)
-        
-        # add new network members and new incremental catchment descs
-        this_river_obj.network = pd.concat([this_river_obj.network, river_branch])            
-        
-        this_river_obj.catchment_boundaries[k] = calculate_incremental_catchment_boundary(boundaries, k)
-        
-        this_river_obj.catchment_descriptors[k] = calculate_incremental_catchment_descriptors(
-            draincells,
-            segments,
-            k,
-            desc_to_use,
-            this_river_obj.catchment_boundaries[k]['increm']
-        )
-        
-        reach_level += 1
 
 
 if False:

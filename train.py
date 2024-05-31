@@ -35,6 +35,14 @@ static_features = dict(
         'CCAR' # cumulative catchment area, as some proxy of cross-sectional area of channel?
     ]
 )
+c_feat_length = [s if "_XX" in s else 1 for s in static_features['c_feats']]
+for i in range(len(c_feat_length)):
+    if c_feat_length[i]=='HGS_XX' or c_feat_length[i]=='HGB_XX':
+        c_feat_length[i] = 5 # each have 5 hydrogeology classes
+    if c_feat_length[i]=='LC_XX':
+        c_feat_length[i] = 10 # aggregated to 10 land cover classes
+static_features['c_feat_length'] = sum(c_feat_length)
+static_features['r_feat_length'] = 3
 
 norm_dict = dict(
     QDPS = 100, # [0.022517, 738.293548], med = 78.3
@@ -55,11 +63,11 @@ cfg = SimpleNamespace(
     d_ff = 32,
     N_h = 2,
     N_l = 2,
-    d_s_in = 31,
-    d_ls_src = 37,
-    d_ls_trg = 36,    
-    d_instream_src = 10,
-    d_instream_trg = 8,
+    d_s_in = 1 + static_features['c_feat_length'],
+    d_ls_src = 7 + static_features['c_feat_length'],
+    d_ls_trg = 6 + static_features['c_feat_length'],
+    d_instream_src = 8 + static_features['r_feat_length'],
+    d_instream_trg = 6 + static_features['r_feat_length'],
     #d_fh_src = 7,
     #d_fh_trg = 6
     
@@ -75,17 +83,27 @@ cfg = SimpleNamespace(
 
 def sample_event(flood_event_df, vwc_quantiles=None,
                  event=None, rid=None, date_range=None):
-    if (event is None) and (date_range is None):
-        event = flood_event_df.sample(1).iloc[0]
-        rid = event.id
-        date_range = pd.date_range(start=event.FlowStartDate, end=event.FlowEndDate, freq='15min')
-    elif not (event is None):
-        rid = event.id
-        date_range = pd.date_range(start=event.FlowStartDate, end=event.FlowEndDate, freq='15min')
-    elif not (date_range is None) and not (rid is None):
-        event = None
     
-    river_obj = load_event_data(rid, date_range, vwc_quantiles=vwc_quantiles)
+    got_working_event = False
+    
+    while not got_working_event:
+        if (event is None) and (date_range is None):
+            event = flood_event_df.sample(1).iloc[0]
+            rid = event.id
+            date_range = pd.date_range(start=event.FlowStartDate, end=event.FlowEndDate, freq='15min')
+        elif not (event is None):
+            rid = event.id
+            date_range = pd.date_range(start=event.FlowStartDate, end=event.FlowEndDate, freq='15min')
+        elif not (date_range is None) and not (rid is None):
+            event = None
+        
+        try:
+            river_obj = load_event_data(rid, date_range, vwc_quantiles=vwc_quantiles)
+            got_working_event = True
+        
+        except: # error with loading corrupt/missing/broken flow data 
+            got_working_event = False
+        
     return river_obj, rid, date_range, event
 
 def fit(model, cfg, flood_events_train, flood_events_val, vwc_quantiles,
@@ -112,9 +130,11 @@ def fit(model, cfg, flood_events_train, flood_events_val, vwc_quantiles,
                     river_obj, date_range, tstep, device, nt_opt=nt_opt,
                     teacher_forcing=teacher_forcing, train=True
                 )
-                running_ls.append(loss_tstep)
+                if loss_tstep is not None:
+                    running_ls.append(loss_tstep)
                 if opt_counter==0:
-                    opt_ls.append(loss_opt)
+                    if loss_opt is not None:
+                        opt_ls.append(loss_opt)
             
             print_values = [('loss_tstep', running_ls[-1]), ('opt_loss', opt_ls[-1])]
             kbar.update(bidx, values=print_values)
@@ -134,7 +154,8 @@ def fit(model, cfg, flood_events_train, flood_events_val, vwc_quantiles,
                         river_obj, date_range, tstep, device, nt_opt=nt_opt,
                         teacher_forcing=teacher_forcing, train=False
                     )
-                    running_ls.append(loss_tstep)                    
+                    if loss_tstep is not None:
+                        running_ls.append(loss_tstep)                  
                 
                 print_values = [('loss', running_ls[-1])]
                 kbarv.update(bidx, values=print_values)
@@ -198,6 +219,8 @@ if __name__=="__main__":
         .dropna()
     )
     
+    # constrain by basin cumulative catchment area to not train on giant rivers?
+    
     # split into training, validation and testing set
     uniq_ids, ev_cnts = np.unique(flood_event_df.id, return_counts=True)
     holdout_every = 10
@@ -222,6 +245,7 @@ if __name__=="__main__":
     ## train model
     teacher_forcing = True
     nt_opt = 1
+    
     # should eventually turn teacher forcing off and increase nt_opt gradually
     model, losses, val_losses = fit(
         model,
@@ -236,11 +260,23 @@ if __name__=="__main__":
         device=device
     )
 
+
+
     if False:
         
-        ## tests
-        
+        ## tests        
         river_obj, rid, date_range, event = sample_event(train_events, vwc_quantiles)
+        
+        for tstep in range(len(date_range)):
+            river_obj, loss_tstep, loss_opt, opt_counter = model.forward(
+                river_obj, date_range, tstep, device, nt_opt=nt_opt,
+                teacher_forcing=teacher_forcing, train=True
+            )
+            if loss_tstep is not None:
+                running_ls.append(loss_tstep)
+            if opt_counter==0:
+                if loss_opt is not None:
+                    opt_ls.append(loss_opt)
         
         # plot flows and NRFA stations
         river_obj.plot_flows(river_obj.flow_est, date_range[1], scaler=1.8, add_min=0.1)
