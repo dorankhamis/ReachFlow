@@ -40,7 +40,8 @@ class River:
         self.soilmoisture_parent_bounds = {} # for trimming soil wetness to watershed
         self.weight_matrices = {} # for catchment-averaging netcdfs
         self.flow_data = {} # 15 minute flow at NRFA stations
-        self.precip_data = {} # hourly catchment average rainfall        
+        self.precip_data = {} # hourly catchment average rainfall
+        self.event = None
         
     def save(self, parent_path):
         # make directory to house all river data
