@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 
-from .utils import zeropad_strint
+from river_reach_modelling.utils import zeropad_strint
 
 hj_base = '/gws/nopw/j04/hydro_jules/data/uk/'
 data_dir = '/gws/nopw/j04/ceh_generic/netzero/downscaling/ceh-gear/'

@@ -14,7 +14,7 @@ import shapely.wkt
 from sklearn.neighbors import NearestNeighbors
 from matplotlib.path import Path as mpl_path
 
-from river_class import River
+from river_reach_modelling.river_class import River
 
 ### functions for building rivers
 

@@ -13,9 +13,10 @@ from pathlib import Path
 from shapely.geometry import box, Point
 from sklearn.neighbors import NearestNeighbors
 
-from .utils import (zeropad_strint, trim_netcdf, calculate_soil_wetness,
-                    merge_two_soil_moisture_days,  normalise_df_simplex_subset,
-                    plot_polygon)
+from river_reach_modelling.utils import (
+    zeropad_strint, trim_netcdf, calculate_soil_wetness,
+    merge_two_soil_moisture_days,  normalise_df_simplex_subset, plot_polygon
+)
 
 hj_base = "/gws/nopw/j04/hydro_jules/data/uk/"
 gear_dir = "/gws/nopw/j04/ceh_generic/netzero/downscaling/ceh-gear/"
@@ -322,7 +323,7 @@ class River:
             [plot_polygon(ax, self.boundaries_increm.loc[i],
                           facecolor=plt.cm.Blues(
                             1.5*self.precip_data[i].at[date_range[tp], 'precip'])
-                         ) for i in selfiver_obj.network.id
+                         ) for i in self.network.id
             ]
 
         plt.plot(*self.boundaries_cumul.loc[self.river_id].exterior.xy,
@@ -760,6 +761,24 @@ class River:
         )
         self.mean_urbext = pd.DataFrame({'QUEX':self.mean_urbext.flatten()},
                                         index=self.cds_increm.index)
+    
+    def save_event_data(self, outdir):        
+        pd.to_pickle(self.flow_data, outdir + '/flow_data.pickle')
+        pd.to_pickle(self.flow_est, outdir + '/flow_estimates.pickle')
+        pd.to_pickle(self.precip_data, outdir + '/precip_data.pickle')
+        pd.to_pickle(self.soil_wetness_data, outdir + '/soilwetness_data.pickle')
+        pd.to_pickle(self.antecedent_soil_wetness, outdir + '/antecedent_soilwetness.pickle')
+        pd.to_pickle(self.mean_urbext, outdir + '/mean_urbext.pickle')
+        pd.to_pickle(self.mean_lc, outdir + '/mean_landcover.pickle')
+        
+    def load_event_data(self, outdir):        
+        self.flow_data = pd.read_pickle(outdir + '/flow_data.pickle')
+        self.flow_est = pd.read_pickle(outdir + '/flow_estimates.pickle')
+        self.precip_data = pd.read_pickle(outdir + '/precip_data.pickle')
+        self.soil_wetness_data = pd.read_pickle(outdir + '/soilwetness_data.pickle')
+        self.antecedent_soil_wetness = pd.read_pickle(outdir + '/antecedent_soilwetness.pickle')
+        self.mean_urbext = pd.read_pickle(outdir + '/mean_urbext.pickle')
+        self.mean_lc = pd.read_pickle(outdir + '/mean_landcover.pickle')        
     
 
 def load_event_data(rid, date_range, vwc_quantiles=None):

@@ -7,9 +7,9 @@ import torch.nn.functional as F
 from torch.optim import Adam
 from contextlib import nullcontext
 
-from .architectures.components.mlp import PositionwiseFeedForward
-from .architectures.components.attention import MultiHeadedAttention
-from .architectures.components.nn_utils import subsequent_mask, clones, weights_init_normal
+from .components.mlp import PositionwiseFeedForward
+from .components.attention import MultiHeadedAttention
+from .components.nn_utils import subsequent_mask, clones, weights_init_normal
 
 EPS = 1e-9
 

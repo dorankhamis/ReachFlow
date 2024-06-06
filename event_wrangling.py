@@ -5,9 +5,9 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 
-from .utils import remove_prefix, remove_suffix
-from .clip_catchment_boundaries import grab_catchment_rainfall
-from .catchment_wrangling import wrangle_descriptors
+from river_reach_modelling.utils import remove_prefix, remove_suffix
+from river_reach_modelling.clip_catchment_boundaries import grab_catchment_rainfall
+from river_reach_modelling.catchment_wrangling import wrangle_descriptors
 
 # define the path to the data
 basedir = '/gws/nopw/j04/hydro_jules/data/uk/flood_events/'

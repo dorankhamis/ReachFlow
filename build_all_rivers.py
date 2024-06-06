@@ -13,10 +13,13 @@ from shapely.geometry import box, Point, LineString
 import argparse
 import time
 
-from catchment_wrangling import *
-from river_class import River
-from river_utils import *
-from utils import zeropad_strint, trim_netcdf, calculate_soil_wetness, merge_two_soil_moisture_days
+from river_reach_modelling.catchment_wrangling import *
+from river_reach_modelling.river_class import River
+from river_reach_modelling.river_utils import *
+from river_reach_modelling.utils import (
+    zeropad_strint, trim_netcdf, calculate_soil_wetness,
+    merge_two_soil_moisture_days
+)
 
 if __name__=='__main__':
     parser = argparse.ArgumentParser()
