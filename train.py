@@ -1,6 +1,7 @@
 import numpy as np
 import pandas as pd
 import geopandas as gpd
+import matplotlib.pyplot as plt
 import torch
 import rioxarray
 import copy
@@ -68,41 +69,66 @@ cfg = SimpleNamespace(
     d_ls_trg = 6 + static_features['c_feat_length'],
     d_instream_src = 8 + static_features['r_feat_length'],
     d_instream_trg = 6 + static_features['r_feat_length'],
-    #d_fh_src = 7,
-    #d_fh_trg = 6
-    
+        
     # training params
     max_batch_size = 10,
     lr = 1e-4,
     max_epochs = 100,
-    train_len = 50,
-    val_len = 25,
+    train_len = 15,
+    val_len = 8,
     feature_names = static_features,
     norm_dict = norm_dict
 )
 
+def parse_event_string(event_string):
+    event = pd.Series({c[0].lstrip():c[-1].lstrip() 
+        for c in [s.lstrip().split("   ") for s in event_string.split('\n')]})
+    event.nrfa_id = int(event.nrfa_id)
+    event.id = int(event.id)
+    event.dc_id = int(event.dc_id)
+    event.xout = float(event.xout)
+    event.yout = float(event.yout)
+    event.basin_area = float(event.basin_area)
+    event.FlowStartDate = pd.to_datetime(event.FlowStartDate)
+    event.FlowEndDate = pd.to_datetime(event.FlowEndDate)
+    return event
+
 def sample_event(flood_event_df, vwc_quantiles=None,
-                 event=None, rid=None, date_range=None):
-    
-    got_working_event = False
-    
+                 event=None, rid=None, date_range=None):    
+    got_working_event = False    
     while not got_working_event:
-        if (event is None) and (date_range is None):
+        # do the event selection
+        if event is not None:
+            rid = event.id
+            date_range = pd.date_range(start=event.FlowStartDate, end=event.FlowEndDate, freq='15min')
+        elif (date_range is not None) and (rid is not None):
+            pass
+        else:
             event = flood_event_df.sample(1).iloc[0]
             rid = event.id
             date_range = pd.date_range(start=event.FlowStartDate, end=event.FlowEndDate, freq='15min')
-        elif not (event is None):
-            rid = event.id
-            date_range = pd.date_range(start=event.FlowStartDate, end=event.FlowEndDate, freq='15min')
-        elif not (date_range is None) and not (rid is None):
-            event = None
         
+        # attempt to load event data
         try:
+            print(rid)
+            print(event)
+            print(date_range[0])
+            print(date_range[1])
             river_obj = load_event_data(rid, date_range, vwc_quantiles=vwc_quantiles)
+            # add checks for NaNs in soil wetness and precip data?
+            
             got_working_event = True
+            print("Got event!")
         
         except: # error with loading corrupt/missing/broken flow data 
             got_working_event = False
+            print("Failed to load event...")
+            
+        if not got_working_event:
+            event = None
+            rid = None
+            date_range = None
+            print("Failed to load event...")
         
     return river_obj, rid, date_range, event
 
@@ -122,21 +148,28 @@ def fit(model, cfg, flood_events_train, flood_events_val, vwc_quantiles,
                           num_epochs=cfg.max_epochs,
                           width=15, always_stateful=False)        
         running_ls = []
-        opt_ls = []
+        opt_ls = []        
         for bidx in range(1, cfg.train_len+1):                                    
             river_obj, rid, date_range, event = sample_event(flood_events_train, vwc_quantiles)
+            event_bar = pkbar.Kbar(
+                target=len(date_range),                
+                width=15, always_stateful=False
+            )
+            running_event_ls = []       
             for tstep in range(len(date_range)):
                 river_obj, loss_tstep, loss_opt, opt_counter = model.forward(
                     river_obj, date_range, tstep, device, nt_opt=nt_opt,
                     teacher_forcing=teacher_forcing, train=True
                 )
-                if loss_tstep is not None:
-                    running_ls.append(loss_tstep)
+                if loss_tstep is not None:                    
+                    running_event_ls.append(loss_tstep)
+                    event_bar.update(tstep, values=[('loss_tstep', loss_tstep)])
                 if opt_counter==0:
                     if loss_opt is not None:
                         opt_ls.append(loss_opt)
-            
-            print_values = [('loss_tstep', running_ls[-1]), ('opt_loss', opt_ls[-1])]
+            running_ls += running_event_ls
+            print_values = [('loss_tstep', np.mean(running_event_ls)),
+                            ('opt_loss', opt_ls[-1])]
             kbar.update(bidx, values=print_values)
         losses.append(np.mean(running_ls)) # append epoch average loss
         
@@ -149,13 +182,20 @@ def fit(model, cfg, flood_events_train, flood_events_val, vwc_quantiles,
             running_ls = []            
             for bidx in range(1, cfg.val_len+1):
                 river_obj, rid, date_range, event = sample_event(flood_events_val, vwc_quantiles)
+                running_event_ls = []
+                event_bar = pkbar.Kbar(
+                    target=len(date_range),                
+                    width=15, always_stateful=False
+                )
                 for tstep in range(len(date_range)):
                     river_obj, loss_tstep, _, _ = model.forward(
                         river_obj, date_range, tstep, device, nt_opt=nt_opt,
                         teacher_forcing=teacher_forcing, train=False
                     )
-                    if loss_tstep is not None:
-                        running_ls.append(loss_tstep)                  
+                    if loss_tstep is not None:                    
+                        running_event_ls.append(loss_tstep)
+                        event_bar.update(tstep, values=[('loss_tstep', loss_tstep)])                    
+                running_ls += running_event_ls               
                 
                 print_values = [('loss', running_ls[-1])]
                 kbarv.update(bidx, values=print_values)
@@ -165,14 +205,12 @@ def fit(model, cfg, flood_events_train, flood_events_val, vwc_quantiles,
             
             is_best = bool(val_losses[-1] < best_loss)
             best_loss = min(val_losses[-1], best_loss)
-            checkpoint = update_checkpoint(epoch, model, optimizer,
-                                           best_loss, losses, val_losses)
+            checkpoint = update_checkpoint(epoch, model, best_loss, losses, val_losses)
             save_checkpoint(checkpoint, is_best, outdir)
         print("Done epoch %d" % (epoch+1))
     return model, losses, val_losses
 
 if __name__=="__main__":
-
     ## file paths
     log_dir = './logs/'
     model_name = f'reach_flow_model'
@@ -206,7 +244,7 @@ if __name__=="__main__":
 
     # constrain by event length
     lower_bound = 24*4 # one day
-    upper_bound = 28**2 * 2 - 1 # 30*24*4 # one month
+    upper_bound = 5*24*4 # five days #28**2 * 2 - 1 # something else?  # 30*24*4 # one month
     flood_event_df = flood_event_df[
         (flood_event_df.EventDuration_15min >= lower_bound) &
         (flood_event_df.EventDuration_15min <= upper_bound)
@@ -219,7 +257,10 @@ if __name__=="__main__":
         .dropna()
     )
     
-    # constrain by basin cumulative catchment area to not train on giant rivers?
+    # constrain by basin cumulative catchment area to not initially 
+    # train on huge rivers as this is very slow
+    large_river_events = flood_event_df[flood_event_df.basin_area >= 4000]
+    flood_event_df = flood_event_df[flood_event_df.basin_area < 4000]
     
     # split into training, validation and testing set
     uniq_ids, ev_cnts = np.unique(flood_event_df.id, return_counts=True)
@@ -241,7 +282,6 @@ if __name__=="__main__":
         river_obj, rid, date_range, event = sample_event(flood_event_df, vwc_quantiles=vwc_quantiles)
         river_obj.plot_flows(river_obj.flow_est, date_range[1])
 
-    
     ## train model
     teacher_forcing = True
     nt_opt = 1
@@ -261,13 +301,28 @@ if __name__=="__main__":
     )
 
 
-
     if False:
+        #################
+        ## tests
+        #################
         
-        ## tests        
-        river_obj, rid, date_range, event = sample_event(train_events, vwc_quantiles)
+        event_string = """nrfa_id                              106003
+            Event                              Event_33
+            FlowStartDate           2013-02-12 23:00:00
+            FlowEndDate             2013-02-15 09:00:00
+            id                                    17560
+            dc_id                             118470523
+            name             Abhainn Roag at Mill Croft
+            river                          Abhainn Roag
+            location                         Mill Croft
+            xout                                75500.0
+            yout                               836150.0
+            basin_area                          52.5625"""
+        event = parse_event_string(event_string)
         
-        for tstep in range(len(date_range)):
+        river_obj, rid, date_range, event = sample_event(train_events, vwc_quantiles, event=event)
+        
+        for tstep in range(3):
             river_obj, loss_tstep, loss_opt, opt_counter = model.forward(
                 river_obj, date_range, tstep, device, nt_opt=nt_opt,
                 teacher_forcing=teacher_forcing, train=True
@@ -277,6 +332,8 @@ if __name__=="__main__":
             if opt_counter==0:
                 if loss_opt is not None:
                     opt_ls.append(loss_opt)
+        
+        
         
         # plot flows and NRFA stations
         river_obj.plot_flows(river_obj.flow_est, date_range[1], scaler=1.8, add_min=0.1)
@@ -291,3 +348,4 @@ if __name__=="__main__":
         xygrid.elev.values[np.isnan(xygrid.elev.values)] = 0
         
         river_obj.plot_river(grid=xygrid.elev, stations=False)
+

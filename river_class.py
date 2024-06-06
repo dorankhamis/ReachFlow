@@ -13,8 +13,9 @@ from pathlib import Path
 from shapely.geometry import box, Point
 from sklearn.neighbors import NearestNeighbors
 
-from utils import (zeropad_strint, trim_netcdf, calculate_soil_wetness,
-                   merge_two_soil_moisture_days,  normalise_df_simplex_subset)
+from .utils import (zeropad_strint, trim_netcdf, calculate_soil_wetness,
+                    merge_two_soil_moisture_days,  normalise_df_simplex_subset,
+                    plot_polygon)
 
 hj_base = "/gws/nopw/j04/hydro_jules/data/uk/"
 gear_dir = "/gws/nopw/j04/ceh_generic/netzero/downscaling/ceh-gear/"
@@ -291,6 +292,42 @@ class River:
                  '--', c='k', linewidth=1.5, alpha=0.8)
         plt.show()
 
+    def plot_catchment_averaged_values(self, var='precip', tp=0):
+        fig, ax = plt.subplots()
+        cm = plt.get_cmap('viridis')
+        num_colours = self.network.reach_level.max() + 1
+        
+        [plt.plot(*self.network.iloc[i].geometry.xy,
+                  c=cm(self.network.iloc[i].reach_level/num_colours),
+                  linewidth=0.9) 
+            for i in range(self.network.shape[0])
+        ]
+
+        if var=='soil_wetness':
+            if tp==0:
+                [plot_polygon(ax, self.boundaries_increm.loc[i],
+                              facecolor=plt.cm.Blues(
+                                self.antecedent_soil_wetness.at[i, 'soil_wetness'])
+                             ) for i in self.network.id
+                ]
+            else:
+                uniq_days = date_range[(date_range.hour == 0) & (date_range.minute == 0)]
+                [plot_polygon(ax, self.boundaries_increm.loc[i],
+                              facecolor=plt.cm.Blues(
+                                self.soil_wetness_data[i].at[uniq_days[tp-1], 'soil_wetness'])
+                             ) for i in self.network.id
+                ]
+        elif var=='precip':
+            [plot_polygon(ax, self.boundaries_increm.loc[i],
+                          facecolor=plt.cm.Blues(
+                            1.5*self.precip_data[i].at[date_range[tp], 'precip'])
+                         ) for i in selfiver_obj.network.id
+            ]
+
+        plt.plot(*self.boundaries_cumul.loc[self.river_id].exterior.xy,
+                 '--', c='k', linewidth=1.5, alpha=0.8)
+        plt.show()
+
     def calculate_areas(self, catchment_type='increm'):
         if catchment_type=='increm':        
             return pd.DataFrame({'area': [self.boundaries_increm.loc[i].area 
@@ -434,8 +471,8 @@ class River:
             end_date_hr = pd.to_datetime(str(pushed_time)[:13] + ':00:00', format="%Y-%m-%d %H:%M:%S")
             
         dates_hr = pd.date_range(start_date_hr, end_date_hr, freq="H")
-        uniq_years = np.unique(dates_hr.year)
-        uniq_months = {str(yy) : np.unique(dates_hr.month[np.where(dates_hr.year==yy)]) for yy in uniq_years}
+        uniq_years = np.unique(dates_hr.year)        
+        uniq_months = {str(yy) : list(set(dates_hr.month[dates_hr.year==yy])) for yy in np.unique(dates_hr.year)}
 
         time_index = []
         self.precip_data = {} # reset dict
@@ -469,6 +506,16 @@ class River:
                 
                 rfd_trim = rfd.isel(x=self.precip_parent_bounds['x_inds'],
                                     y=self.precip_parent_bounds['y_inds'])
+
+                # gear fill value
+                rfd_trim.rainfall_amount.values[rfd_trim.rainfall_amount.values==-999] = np.nan
+                
+                # edge cases
+                precip_averages = rfd_trim.rainfall_amount.mean(dim=("y", "x")).values
+                for ti in range(len(rfd_trim.time)):
+                    rfd_trim.rainfall_amount.values[ti,:,:][
+                        np.isnan(rfd_trim.rainfall_amount.values[ti,:,:])
+                    ] = precip_averages[ti]
                 
                 # do catchment averaging        
                 for rid in self.network.id:
@@ -499,69 +546,95 @@ class River:
             )
             self.precip_data[k] = rain        
 
+    def _calc_antecedent_soil_wetness(self, date_range, vwc_quantiles, sm_data_dir):
+        res = 1000
+        
+        # do antecedent weighted soil moisture
+        this_sm_obj = rioxarray.open_rasterio(sm_data_dir + f'/{date_range[0].year}/SM_{date_range[0].year}{zeropad_strint(date_range[0].month)}.nc')
+
+        if len(self.soilmoisture_parent_bounds.keys())==0:
+            big_xy_bounds = self.boundaries_cumul.loc[self.river_id].bounds # (minx, miny, maxx, maxy)
+            bx_inds = np.intersect1d(np.where((this_sm_obj.x + res/2) >= big_xy_bounds[0]),
+                                     np.where((this_sm_obj.x - res/2) <= big_xy_bounds[2]))
+            by_inds = np.intersect1d(np.where((this_sm_obj.y + res/2) >= big_xy_bounds[1]),
+                                     np.where((this_sm_obj.y - res/2) <= big_xy_bounds[3]))
+            self.soilmoisture_parent_bounds['x_inds'] = bx_inds
+            self.soilmoisture_parent_bounds['y_inds'] = by_inds
+
+        # do this only once
+        vwc_quantiles_trim = vwc_quantiles.isel(x=self.soilmoisture_parent_bounds['x_inds'],
+                                                y=self.soilmoisture_parent_bounds['y_inds'])
+
+        prev_day = date_range[0] - pd.to_timedelta("1D")
+        merged_sm = merge_two_soil_moisture_days(
+            this_sm_obj,
+            date_range[0],
+            prev_day,
+            sm_data_dir,
+            self.soilmoisture_parent_bounds['x_inds'],
+            self.soilmoisture_parent_bounds['y_inds']
+        )        
+
+        merged_sm = calculate_soil_wetness(merged_sm, vwc_quantiles_trim, incl_time=False)
+        # hack to deal with NaNs
+        sw_averages = float(merged_sm.soil_wetness.mean().values)
+        merged_sm.soil_wetness.values[np.isnan(merged_sm.soil_wetness.values)] = sw_averages
+            
+        antecedent_soil_wetness = []
+        for rid in self.network.id:
+            cav = self.catchment_average_netcdf(
+                rid,
+                merged_sm,
+                'soil_wetness',
+                res=res,
+                plot=False,
+                nc_type='soil_moisture'
+            )
+            antecedent_soil_wetness.append(cav)
+        antecedent_soil_wetness = np.array(antecedent_soil_wetness)
+        antecedent_soil_wetness[np.isnan(antecedent_soil_wetness)] = np.nanmean(antecedent_soil_wetness)
+        self.antecedent_soil_wetness = pd.DataFrame(
+            {'soil_wetness':antecedent_soil_wetness},
+            index=self.network.id
+        )
+        return this_sm_obj, vwc_quantiles_trim
+        
+
     def load_soil_wetness(self, date_range, vwc_quantiles, sm_data_dir):
         # do this for the antecedent time point, but then also for every
         # time where we click over into a new day?
         # "assimilate" the soil wetness into the state vector at start of each day?
         res = 1000
         
-        uniq_days = date_range[(date_range.hour == 0) & (date_range.minute == 0)]
-        uniq_years = np.unique(date_range.year)
-        uniq_months = {str(yy) : np.unique(date_range.month[np.where(uniq_days.year==yy)]) for yy in uniq_years}
+        uniq_days = date_range[(date_range.hour == 0) & (date_range.minute == 0)] # "new days" not including current day
+        uniq_years = np.unique(uniq_days.year)        
+        uniq_months = {str(yy) : list(set(uniq_days.month[uniq_days.year==yy])) for yy in np.unique(uniq_days.year)}
+        
+        this_sm_obj, vwc_quantiles_trim = self._calc_antecedent_soil_wetness(date_range, vwc_quantiles, sm_data_dir)
+        
         self.soil_wetness_data = {} # reset dict
+        soil_wetness_dict = {}
         for iy, yy in enumerate(uniq_years):
             for im, mm in enumerate(uniq_months[str(yy)]):
-                this_sm_obj = rioxarray.open_rasterio(sm_data_dir + f'/{yy}/SM_{yy}{zeropad_strint(mm)}.nc')
-
-                if len(self.soilmoisture_parent_bounds.keys())==0:
-                    big_xy_bounds = self.boundaries_cumul.loc[self.river_id].bounds # (minx, miny, maxx, maxy)
-                    bx_inds = np.intersect1d(np.where((this_sm_obj.x + res/2) >= big_xy_bounds[0]),
-                                             np.where((this_sm_obj.x - res/2) <= big_xy_bounds[2]))
-                    by_inds = np.intersect1d(np.where((this_sm_obj.y + res/2) >= big_xy_bounds[1]),
-                                             np.where((this_sm_obj.y - res/2) <= big_xy_bounds[3]))
-                    self.soilmoisture_parent_bounds['x_inds'] = bx_inds
-                    self.soilmoisture_parent_bounds['y_inds'] = by_inds
-
-                if iy==0 and im==0:
-                    # do antecedent weighted soil moisture
-                    prev_day = date_range[0] - pd.to_timedelta("1D")
-                    merged_sm = merge_two_soil_moisture_days(
-                        this_sm_obj,
-                        date_range[0],
-                        prev_day,
-                        sm_data_dir,
-                        self.soilmoisture_parent_bounds['x_inds'],
-                        self.soilmoisture_parent_bounds['y_inds']
-                    )
-                    
-                    # do this only once
-                    vwc_quantiles_trim = vwc_quantiles.isel(x=self.soilmoisture_parent_bounds['x_inds'],
-                                                            y=self.soilmoisture_parent_bounds['y_inds'])
-                    
-                    merged_sm = calculate_soil_wetness(merged_sm, vwc_quantiles_trim, incl_time=False)
-                    
-                    antecedent_soil_wetness = {}
-                    for rid in self.network.id:
-                        cav = self.catchment_average_netcdf(
-                            rid,
-                            merged_sm,
-                            'soil_wetness',
-                            res=res,
-                            plot=False,
-                            nc_type='soil_moisture'
-                        )
-                        antecedent_soil_wetness[rid] = cav    
-                    self.antecedent_soil_wetness = pd.DataFrame(antecedent_soil_wetness, index=['soil_wetness']).T
+                if not (yy==date_range[0].year and mm==date_range[0].month):
+                    this_sm_obj = rioxarray.open_rasterio(sm_data_dir + f'/{yy}/SM_{yy}{zeropad_strint(mm)}.nc')
 
                 this_sm_trim = this_sm_obj.isel(x=self.soilmoisture_parent_bounds['x_inds'],
                                                 y=self.soilmoisture_parent_bounds['y_inds'])
+
                 # hack using numpy datetime to subset datetimes
                 this_sm_trim['time'] = this_sm_trim.time.astype("datetime64[ns]")
                 this_sm_trim = this_sm_trim.sel(time = this_sm_trim.time.isin(uniq_days))
 
                 this_sm_trim = calculate_soil_wetness(this_sm_trim, vwc_quantiles_trim)
-                    
-                soil_wetness_dict = {}
+                
+                # hack to deal with NaNs
+                sw_averages = this_sm_trim.soil_wetness.mean(dim=("y", "x")).values
+                for ti in range(len(this_sm_trim.time)):
+                    this_sm_trim.soil_wetness.values[ti,:,:][
+                        np.isnan(this_sm_trim.soil_wetness.values[ti,:,:])
+                    ] = sw_averages[ti]
+                
                 for rid in self.network.id:
                     cav = self.catchment_average_netcdf(
                         rid,

@@ -7,9 +7,15 @@ import torch.nn.functional as F
 from torch.optim import Adam
 from contextlib import nullcontext
 
-from architectures.components.mlp import PositionwiseFeedForward
-from architectures.components.attention import MultiHeadedAttention
-from architectures.components.nn_utils import subsequent_mask, clones, weights_init_normal
+from .architectures.components.mlp import PositionwiseFeedForward
+from .architectures.components.attention import MultiHeadedAttention
+from .architectures.components.nn_utils import subsequent_mask, clones, weights_init_normal
+
+EPS = 1e-9
+
+''' another version of this as a graph convolutional network
+making use of directed edges to push water downstream?
+'''
 
 def gather_params(model):    
     params = []
@@ -18,6 +24,13 @@ def gather_params(model):
             params.append(param.view(-1))
         params = torch.cat(params)
     return params
+
+class NoneLoss():
+    def __init__(self):
+        self.value = None
+        
+    def item(self):
+        return self.value
 
 class SublayerConnection(nn.Module):
     def __init__(self, size, dropout):
@@ -146,13 +159,12 @@ class ReachFlow(nn.Module):
         self.ls_model = Transformer(cfg.d_ls_src, cfg.d_ls_trg, cfg.d_model, cfg.d_ff, cfg.dropout, cfg.N_h, cfg.N_l)
         self.l_from_ls_model = LinearDecoder(cfg.d_model, 1, final_relu=True)
         self.s_from_ls_model = LinearDecoder(cfg.d_model, 1, final_relu=True)
-        self.fstream_model = Transformer(cfg.d_instream_src, cfg.d_instream_trg, cfg.d_model, cfg.d_ff, cfg.dropout, cfg.N_h, cfg.N_l)
-        #self.fh_model = Transformer(cfg.d_fh_src, cfg.d_fh_trg, cfg.d_model, cfg.d_ff, cfg.dropout, cfg.N_h, cfg.N_l)
+        self.fstream_model = Transformer(cfg.d_instream_src, cfg.d_instream_trg, cfg.d_model, cfg.d_ff, cfg.dropout, cfg.N_h, cfg.N_l)        
         self.latent2flow_model = LinearDecoder(cfg.d_model, 1, final_relu=True)
         
         self.max_batch_size = cfg.max_batch_size
         self.optimizer = None
-        self.loss_opt = None
+        self.loss_opt = NoneLoss()
         self.opt_counter = 0
         self.c_feat_list = cfg.feature_names['c_feats'] # catchment descriptors
         self.r_feat_list = cfg.feature_names['r_feats'] # reach characteristics
@@ -162,17 +174,20 @@ class ReachFlow(nn.Module):
         self.optimizer = Adam(self.parameters(), lr=cfg.lr)
 
     def calculate_loss(self, river_obj, tsteps):
-        loss = None
+        loss = NoneLoss()
         for i, nid in enumerate(river_obj.flow_data.keys()):
             F_obs = (torch.from_numpy(river_obj.flow_data[nid].iloc[tsteps].values)
                 .to(torch.float32)
                 .unsqueeze(0)
                 .to(river_obj.F_t[river_obj.river_id].device)
             )
+            F_obs = F_obs / self.nm['FLOW'] # normalise to working scale
+            F_obs_av = np.nanmean(river_obj.flow_data[nid].values) / self.nm['FLOW']
             where_finite = torch.isfinite(F_obs)
             if len(torch.where(where_finite)[1])==0:
                 # all NaNs, so skip                
                 continue
+            
             self.opt_counter += int(where_finite.sum())
             
             gauge = river_obj.points_in_catchments.query('nrfa_id == {0}'.format(nid))
@@ -184,19 +199,17 @@ class ReachFlow(nn.Module):
             )
             Fup = sum([river_obj.F_t[k][:,tsteps,:] for k in upstream_cells.id])
             Fdown = river_obj.F_t[downstream_id][:,tsteps,:]
-            F_pred = (dnorm*Fup + (1-dnorm)*Fdown) * self.nm['FLOW']
+            F_pred = (dnorm*Fup + (1-dnorm)*Fdown)
             
-            # do we want to scale the loss of each river reach by the
-            # mean flow so we don't bias towards larger reaches?
-            if i==0:
-                loss = F.mse_loss(F_pred, F_obs)
+            if loss.item() is None:
+                loss = F.mse_loss(F_pred, F_obs) / (F_obs_av + EPS)
             else:
-                loss = loss + F.mse_loss(F_pred, F_obs)
+                loss = loss + F.mse_loss(F_pred, F_obs) / (F_obs_av + EPS)
         return loss
     
     def opt_step(self, river_obj):
-        if self.loss_opt is not None: # check for no-obs periods
-            # propagate derivatives
+        if self.loss_opt.item() is not None: # check for no-obs periods
+            ## propagate derivatives
             self.loss_opt = self.loss_opt / float(self.opt_counter)
             self.loss_opt.backward()
             self.optimizer.step()
@@ -205,18 +218,14 @@ class ReachFlow(nn.Module):
             self.optimizer.zero_grad()        
             self.opt_counter = 0
             
-            # detach river object tensors
-            print(river_obj.S_t[river_obj.river_id][0,-1:,0])
-            print(river_obj.L_t[river_obj.river_id][0,-1:,0])
-            print(river_obj.F_t[river_obj.river_id][0,-1:,0])
-            print(river_obj.Fl_t[river_obj.river_id][0,-1:,0])
-            print(river_obj.Fu_t[river_obj.river_id][0,-1:,0])
+            ## detach river object tensors            
             for rid in river_obj.sorted_ids:
                 river_obj.S_t[rid] = river_obj.S_t[rid].detach()
                 river_obj.L_t[rid] = river_obj.L_t[rid].detach()
                 river_obj.F_t[rid] = river_obj.F_t[rid].detach()
                 river_obj.Fl_t[rid] = river_obj.Fl_t[rid].detach()
                 river_obj.Fu_t[rid] = river_obj.Fu_t[rid].detach()
+                
         return river_obj
 
     def forward(self, river_obj, date_range, tstep, device,
@@ -258,11 +267,8 @@ class ReachFlow(nn.Module):
                 )
                 river_obj.Fu_t[rid] = torch.cat([river_obj.Fu_t[rid], F_u], dim=1)
                 
-                # attenuation/hysteresis of flow at drainage cell                
-                #F_h = self.history_flow_contribution(river_obj, rid, tstep, train=train)
-                
                 # sum contributions and output total flow value at drainage cell
-                Flow = F_u + river_obj.Fl_t[rid][:,-1:,:] # + F_h            
+                Flow = F_u + river_obj.Fl_t[rid][:,-1:,:]            
                 river_obj.F_t[rid] = torch.cat([river_obj.F_t[rid], Flow], dim=1) # B, L, C
         
         new_loss = False
@@ -270,16 +276,15 @@ class ReachFlow(nn.Module):
             new_loss = True
         
         if tstep==0:
-            loss_tstep = None
+            loss_tstep = NoneLoss()
         else:
             loss_tstep = self.calculate_loss(river_obj, [tstep])
         
-        if new_loss:
+        if new_loss: # start accumulating loss
             self.loss_opt = loss_tstep
         else:
-            if loss_tstep is not None:
-                self.loss_opt = self.loss_opt + loss_tstep
-        # model.opt_counter += 1
+            if loss_tstep.item() is not None: # don't accumulate if no loss calculated
+                self.loss_opt = self.loss_opt + loss_tstep        
                 
         if (tstep % nt_opt == 0 and tstep > 0) or tstep == (len(date_range)-1):        
             if train:
@@ -287,14 +292,7 @@ class ReachFlow(nn.Module):
             else:
                 pass
         
-        if loss_tstep is None and self.loss_opt is None:
-            return river_obj, loss_tstep, self.loss_opt, self.opt_counter
-        elif loss_tstep is None:
-            return river_obj, loss_tstep, self.loss_opt.item(), self.opt_counter
-        elif self.loss_opt is None:
-            return river_obj, loss_tstep.item(), self.loss_opt, self.opt_counter
-        else:
-            return river_obj, loss_tstep.item(), self.loss_opt.item(), self.opt_counter
+        return river_obj, loss_tstep.item(), self.loss_opt.item(), self.opt_counter
     
     def prepare_inputs(self, river_obj, device, teacher_forcing=False):
         river_obj.S_t = {}
@@ -305,7 +303,6 @@ class ReachFlow(nn.Module):
         river_obj.Fl_t = {}
         river_obj.c_feats = {}
         river_obj.r_feats = {}
-        #river_obj.h_feats = {}
         
         river_obj.sorted_ids = river_obj.network.sort_values('reach_level', ascending=False).id.values
         
@@ -343,8 +340,7 @@ class ReachFlow(nn.Module):
             c_feats.remove('QUEX')
             incl_urbex = True
         if 'LC_XX' in c_feats:
-            c_feats.remove('LC_XX')
-            #c_feats += list(river_obj.mean_lc.columns)
+            c_feats.remove('LC_XX')            
             incl_lc = True
         if 'CCAR' in r_feats:
             r_feats.remove('CCAR')
@@ -405,14 +401,36 @@ class ReachFlow(nn.Module):
             )
             # normalise
             river_obj.flow_teacherforcing[rid] = river_obj.flow_teacherforcing[rid] / self.nm['FLOW']
-    
-                # # history features
-                # river_obj.h_feats[rid] = torch.from_numpy(np.hstack([
-                    # river_obj.cds_increm.loc[rid, ['REACH_SLOPE']].values,
-                    # river_obj.cds_cumul.loc[rid, ['CCAR']].values
-                # ])).to(torch.float32).unsqueeze(0).unsqueeze(0) # B, L, C
-        
+
         return river_obj
+    
+    def build_LS_inputs(self, river_obj, rid, tstep):
+        LS_src = torch.cat([
+            river_obj.S_t[rid][:, :tstep, :],
+            river_obj.L_t[rid][:, :tstep, :],
+            river_obj.P_t[rid][:, :tstep, :],            
+            river_obj.c_feats[rid].expand(-1, tstep, -1),
+            self.time_ins[:, :tstep, :]
+        ], dim=-1)
+        LS_trg = torch.cat([
+            river_obj.S_t[rid][:, tstep:(tstep+1), :],
+            river_obj.P_t[rid][:, tstep:(tstep+1), :],            
+            river_obj.c_feats[rid],
+            self.time_ins[:, tstep:(tstep+1), :]
+        ], dim=-1)
+        return LS_src, LS_trg, river_obj.S_t[rid][:, tstep:(tstep+1), :]
+    
+    def run_terrestrial_models(self, LS_src, LS_trg, S_in):
+        LS_latent = self.ls_model(LS_src, LS_trg, mask=None) # B, L, C
+        
+        # L_out = self.l_from_ls_model(LS_latent) # B, L, C
+        # S_out = self.s_from_ls_model(LS_latent) # B, L, C
+        
+        A_out = self.l_from_ls_model(LS_latent) # B, L, C
+        DeltaS_out = self.s_from_ls_model(LS_latent) # B, L, C
+        L_out = A_out * S_in
+        S_out = (S_in + DeltaS_out).clamp(min=0)
+        return L_out, S_out, A_out, DeltaS_out, LS_latent
     
     def initial_lateral_inflow_and_storage(self, river_obj, rid, train=False):
         # this is different for a variety of reasons!        
@@ -432,7 +450,7 @@ class ReachFlow(nn.Module):
             with torch.no_grad():
                 S0 = self.s_model(S_inputs) # B, L, C
         
-        ## first timepoint of lateral in-flow
+        ## first timepoint of lateral in-flow        
         LS_src = torch.zeros((1,0,1), dtype=torch.float32).to(thisdevice)
         LS_trg = torch.cat([
             S0,
@@ -442,9 +460,7 @@ class ReachFlow(nn.Module):
         ], dim=-1)
         
         with torch.no_grad() if not train else nullcontext():
-            LS_latent = self.ls_model(LS_src, LS_trg, mask=None) # B, L, C    
-            L_out = self.l_from_ls_model(LS_latent) # B, L, C
-            S_out = self.s_from_ls_model(LS_latent) # B, L, C        
+            L_out, S_out, A_out, DeltaS_out, LS_latent = self.run_terrestrial_models(LS_src, LS_trg, S0)
         
         return L_out, torch.cat([S0, S_out], dim=1)
     
@@ -480,6 +496,7 @@ class ReachFlow(nn.Module):
                 ], dim=0)
                 batch_rids.append(rid)
             
+            
             if (n+1)%self.max_batch_size==0 or n==(len(river_obj.sorted_ids)-1):
                 # run a batch        
                 with torch.no_grad() if not train else nullcontext():
@@ -488,9 +505,7 @@ class ReachFlow(nn.Module):
                 LS_trg = torch.cat([S0, LS_trg], dim=-1)
 
                 with torch.no_grad() if not train else nullcontext():
-                    LS_latent = self.ls_model(LS_src, LS_trg, mask=None) # B, L, C    
-                    L_out = self.l_from_ls_model(LS_latent) # B, L, C
-                    S_out = self.s_from_ls_model(LS_latent) # B, L, C                
+                    L_out, S_out, A_out, DeltaS_out, LS_latent = self.run_terrestrial_models(LS_src, LS_trg, S0)
                 
                 # store
                 for j, rid in enumerate(batch_rids):            
@@ -502,22 +517,6 @@ class ReachFlow(nn.Module):
                 new_batch = False
             n += 1
         return river_obj
-
-    def build_LS_inputs(self, river_obj, rid, tstep):
-        LS_src = torch.cat([
-            river_obj.S_t[rid][:, :tstep, :],
-            river_obj.L_t[rid][:, :tstep, :],
-            river_obj.P_t[rid][:, :tstep, :],            
-            river_obj.c_feats[rid].expand(-1, tstep, -1),
-            self.time_ins[:, :tstep, :]
-        ], dim=-1)
-        LS_trg = torch.cat([
-            river_obj.S_t[rid][:, tstep:(tstep+1), :],
-            river_obj.P_t[rid][:, tstep:(tstep+1), :],            
-            river_obj.c_feats[rid],
-            self.time_ins[:, tstep:(tstep+1), :]
-        ], dim=-1)
-        return LS_src, LS_trg
     
     def lateral_inflow_and_storage(self, river_obj, rid, date_range, tstep, train=False):
         ## calculate lateral in-flow and new storage 
@@ -529,20 +528,30 @@ class ReachFlow(nn.Module):
         )
         L = Linear(LS_latent)
         S = Linear(LS_latent)
+                    
+        Maybe to enforce S to be a meaningful non-zero quantity we can re-factor
+        so that the lateral in-flow is catchment descriptor-dependent 
+        factor multiplied by the storage factor:
+        L = A * S
+        i.e. model the response factor A explicitly?
+        
+        A = Linear(LS_latent)
+        Delta S = Linear(LS_latent)
+        L(t) = A(t) * S(t)
+        S(t+1) = S(t) + Delta S
+        
         '''
         
-        LS_src, LS_trg = self.build_LS_inputs(river_obj, rid, tstep)
+        LS_src, LS_trg, S_in = self.build_LS_inputs(river_obj, rid, tstep)
         
         with torch.no_grad() if not train else nullcontext():
-            LS_latent = self.ls_model(LS_src, LS_trg, mask=None) # B, L, C
-            L_out = self.l_from_ls_model(LS_latent) # B, L, C
-            S_out = self.s_from_ls_model(LS_latent) # B, L, C        
-        
+            L_out, S_out, A_out, DeltaS_out, LS_latent = self.run_terrestrial_models(LS_src, LS_trg, S_in)
+
         # check if new day has ticked to calculate S_assim from soil wetness
         # do something like average of S_assim and S_out at new day ticks?    
         if date_range[tstep].hour==0 and date_range[tstep].minute==0:
             current_soilwetness = torch.from_numpy(
-                np.array([river_obj.soil_wetness_data[rid].at[date_range[tstep, 'soil_wetness']]])
+                np.array([river_obj.soil_wetness_data[rid].at[date_range[tstep], 'soil_wetness']])
             ).to(torch.float32)[None,...].unsqueeze(0).to(thisdevice) # B, L, C
             
             S_inputs = torch.cat([current_soilwetness, river_obj.c_feats[rid]], dim=-1)        
@@ -563,22 +572,25 @@ class ReachFlow(nn.Module):
         while n < len(river_obj.sorted_ids):
             rid = river_obj.sorted_ids[n]
             
-            L_s, L_t = self.build_LS_inputs(river_obj, rid, tstep)
+            L_s, L_t, S_i = self.build_LS_inputs(river_obj, rid, tstep)
             
             if new_batch:
                 LS_src = L_s.clone()
                 LS_trg = L_t.clone()
+                S_in = S_i.clone()
                 batch_rids = [rid]
             else:
                 LS_src = torch.cat([LS_src, L_s.clone()], dim=0)
                 LS_trg = torch.cat([LS_trg, L_t.clone()], dim=0)
+                S_in = torch.cat([S_in, S_i.clone()], dim=0)
                 batch_rids.append(rid)
+
 
             # check if new day has ticked to calculate S_assim from soil wetness
             # do something like average of S_assim and S_out at new day ticks?    
             if date_range[tstep].hour==0 and date_range[tstep].minute==0:
                 current_soilwetness = torch.from_numpy(
-                    np.array([river_obj.soil_wetness_data[rid].at[date_range[tstep, 'soil_wetness']]])
+                    np.array([river_obj.soil_wetness_data[rid].at[date_range[tstep], 'soil_wetness']])
                 ).to(torch.float32)[None,...].unsqueeze(0).to(thisdevice) # B, L, C
                 
                 if new_batch:
@@ -593,11 +605,10 @@ class ReachFlow(nn.Module):
                     with torch.no_grad() if not train else nullcontext():
                         S_assim = self.s_model(S_inputs) # B, L, C                    
                     
+            
             if (n+1)%self.max_batch_size==0 or n==(len(river_obj.sorted_ids)-1):
                 with torch.no_grad() if not train else nullcontext():
-                    LS_latent = self.ls_model(LS_src, LS_trg, mask=None) # B, L, C
-                    L_out = self.l_from_ls_model(LS_latent) # B, L, C
-                    S_out = self.s_from_ls_model(LS_latent) # B, L, C                
+                    L_out, S_out, A_out, DeltaS_out, LS_latent = self.run_terrestrial_models(LS_src, LS_trg, S_in)
                 
                 if date_range[tstep].hour==0 and date_range[tstep].minute==0:       
                     S_out = 0.5*(S_out + S_assim)
@@ -775,83 +786,3 @@ if False:
     model.to(device)
     model.setup_optimizer(cfg)
     
-
-    nt_opt = 1
-    teacher_forcing = True
-    train = True
-    river_obj, rid, date_range, event = sample_event(train_events, vwc_quantiles)
-    
-    tstep = 0 
-
-    if train:
-        model.train()
-    else:
-        model.eval()
-    
-    # perform a single forward-pass time tick across all reaches
-    if tstep==0:
-        ## do initial one-off things
-        river_obj = model.prepare_inputs(river_obj, device, teacher_forcing=teacher_forcing)
-        
-        ## run forward initial timepoint
-        river_obj = model.batched_initial_lateral_inflow_and_storage(river_obj, train=train)                
-        for rid in river_obj.sorted_ids:
-            # prepare initial flows
-            river_obj.F_t[rid] = river_obj.flow_teacherforcing[rid][:,:1,:]
-            river_obj.Fu_t[rid] = model.zeros_vec.clone().to(device)
-            river_obj.Fl_t[rid] = model.zeros_vec.clone().to(device)
-            
-    else:
-        ## do normal forward algorithm parts            
-        # in-flow from land and storage state of catchment
-        river_obj = model.batched_lateral_inflow_and_storage(river_obj, date_range, tstep, train=train)
-        
-        # contribution to flow from land at drainage cell
-        river_obj = model.batched_terrestrial_flow_contribution(river_obj, tstep, train=train)
-        
-        for rid in river_obj.network.sort_values('reach_level', ascending=False).id:                
-            # contribution to flow from upstream at drainage cell                
-            F_u = model.upstream_flow_contribution(
-                river_obj,
-                rid,
-                tstep,
-                teacher_forcing=teacher_forcing,
-                train=train
-            )
-            river_obj.Fu_t[rid] = torch.cat([river_obj.Fu_t[rid], F_u], dim=1)
-            
-            # attenuation/hysteresis of flow at drainage cell                
-            #F_h = model.history_flow_contribution(river_obj, rid, tstep, train=train)
-            
-            # sum contributions and output total flow value at drainage cell
-            Flow = F_u + river_obj.Fl_t[rid][:,-1:,:] # + F_h            
-            river_obj.F_t[rid] = torch.cat([river_obj.F_t[rid], Flow], dim=1) # B, L, C
-    
-    new_loss = False
-    if model.opt_counter==0:
-        new_loss = True
-    
-    if tstep==0:
-        loss_tstep = None
-    else:
-        loss_tstep = model.calculate_loss(river_obj, [tstep])
-    
-    if new_loss:
-        model.loss_opt = loss_tstep
-    else:
-        if loss_tstep is not None:
-            model.loss_opt = model.loss_opt + loss_tstep
-    # model.opt_counter += 1
-            
-    if (tstep % nt_opt == 0 and tstep > 0) or tstep == (len(date_range)-1):        
-        if train:
-            river_obj = model.opt_step(river_obj)
-            print(river_obj.S_t[river_obj.river_id][0,-1:,0])
-            print(river_obj.L_t[river_obj.river_id][0,-1:,0])
-            print(river_obj.F_t[river_obj.river_id][0,-1:,0])
-            print(river_obj.Fl_t[river_obj.river_id][0,-1:,0])
-            print(river_obj.Fu_t[river_obj.river_id][0,-1:,0])
-        else:
-            pass
-            
-    tstep += 1 

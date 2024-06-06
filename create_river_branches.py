@@ -193,39 +193,6 @@ if MATCH_GAUGES_TO_REACHES:
 ##############################
 '''
 
-if False:
-    c_feats = [
-        'QB19',
-        'QUEX', # merging QUEX and QUE2
-        'QDPS',
-        'ICAR',
-        'QDPL', # mean drainage path length
-        'DRAINAGE_DENSITY', # channel length / catchment area
-        'HGS_XX',
-        'HGB_XX',
-        'LC_XX'
-    ]
-    r_feats = [
-        'REACH_LENGTH',
-        'REACH_SLOPE',
-        'CCAR' # as some measure of cross-sectional area of channel?
-    ]
-    
-    ## normalisation
-    norm_dict = dict(
-        QB19 = 1, # [0,1]
-        QUEX = 1, # [0,1]
-        QUE2 = 1, # [0,1]
-        QDPS = 100, # [0.022517, 738.293548], med = 78.3
-        ICAR = 25, # [0.002500, 264.972500], med = 2.725000
-        REACH_LENGTH = 1000, # [50 , 44808.178182], med = 1257.106781
-        REACH_SLOPE = 5, # [0, 34.779979], med = 0.527106
-        CCAR = 50, # [3.00000, 9971.32250], med = 12.28125
-        QDPL = 1000, # [7.071068, 18064.327412], med = 1519.811097
-        DRAINAGE_DENSITY = 1, # [0.002611, 28.284271], med = 0.943428
-        PRECIP = 100
-    )
-
 
 if False:
     ## loading all rivers to find normalisations of all static quantities
@@ -321,44 +288,11 @@ if False:
         dwnid = segments.at[nextid, 'dwn_id']
         if dwnid == nextid:
             tidal = True
-        nextid = dwnid
         if not tidal:
             paper_trail.append(nextid)
-        
+        nextid = dwnid
+
     bad_rid = dwnid
-
-
-
-if False:
-    ### test gathering all data for a catchment and specific date range
-    gear_dir = "/gws/nopw/j04/ceh_generic/netzero/downscaling/ceh-gear/"
-    sm_data_dir = "/gws/nopw/j04/hydro_jules/data/uk//soil_moisture_map/output/netcdf/SM/"
-    flow_dir = hjflood_base + "/15min_flow_data/"
-
-    ## choose catchment and load river object
-    rid = 59387 # 15340
-    river_obj = River()
-    river_obj.load(save_rivers_dir, rid)
-
-    ## define date range
-    date_range = pd.date_range(start="1995/04/08 11:45:00", end="1995/04/10 13:15:00", freq='15min')
-
-    ## load flow observations
-    river_obj.load_flow_data(date_range, flow_dir) # creates river_obj.flow_data
-
-    # generate initial flow condition across entire river network
-    river_obj.generate_teacher_forcing_flows() # creates river_obj.flow_est
-
-    ## load precip
-    river_obj.load_precip_data(date_range, gear_dir) # populates river_obj.precip_data
-    # what about antecedent precip?
-
-    ## load SM
-    vwc_quantiles = rioxarray.open_rasterio(sm_data_dir + '/vwc_quantiles.nc')
-    river_obj.load_soil_wetness(date_range, vwc_quantiles, sm_data_dir)  # populates river_obj.soil_wetness_data
-
-    ## approximate land cover from 1990 and 2015 values
-    river_obj.calculate_lc_for_event()
 
 if False:
     # plot line segments with flow as line thickness
@@ -371,11 +305,6 @@ if False:
                 .at[date_range[5],'flow']
             ))
         for i in range(river_obj.network.shape[0])]
-
-    # [plt.plot(*river_obj.boundaries_increm.loc[i].exterior.xy, ':',
-              # c=cm(river_obj.network.iloc[idx].reach_level/num_colours),
-              # linewidth=0.3, alpha=0.9) 
-        # for idx, i in enumerate(river_obj.network.id)]
 
     plt.plot(
         river_obj.points_in_catchments[
@@ -495,10 +424,16 @@ if False:
               linewidth=1.2) 
         for i in range(river_obj.network.shape[0])]
 
+    uniq_days = date_range[(date_range.hour == 0) & (date_range.minute == 0)]
     [plot_polygon(ax, river_obj.boundaries_increm.loc[i],
                   facecolor=plt.cm.Blues(
-                    1.5*river_obj.precip_data[i].at[date_range[-3], 'precip'])
-                 ) for i in river_obj.network.id]
+                    river_obj.soil_wetness_data[i].at[uniq_days[0], 'soil_wetness'])
+                 ) for i in river_obj.network.id]    
+    
+    # [plot_polygon(ax, river_obj.boundaries_increm.loc[i],
+                  # facecolor=plt.cm.Blues(
+                    # 1.5*river_obj.precip_data[i].at[date_range[-3], 'precip'])
+                 # ) for i in river_obj.network.id]                 
 
     plt.plot(*river_obj.boundaries_cumul.loc[river_obj.river_id].exterior.xy,
              '--', c='k', linewidth=1.5, alpha=0.8)
@@ -603,32 +538,3 @@ if False:
         # print(f"Finished chain slice in {(finish_time-start_time)/60.} minutes")
 
 
-if False:
-    ''' won't need this if thresholding on CCAR? '''
-    ## stomp small catchments
-    incr_areas = [this_river_obj.catchment_boundaries[i]['increm'].area for i in this_river_obj.network.id]
-    med_area = np.median(incr_areas)
-    inds_to_stomp = np.where(np.array(incr_areas)/med_area < 0.025)[0]
-    for i in inds_to_stomp:
-        # we want to join the small stomped river onto its larger (cumulatively)
-        # parent river, taking union of catchment polygon, summing linestring
-        # and accumulating catchment descriptors
-        parent_of_stomped = this_river_obj.network[this_river_obj.network.]
-        drain_into_stomped = this_river_obj.network[this_river_obj.network.]
-
-if False:
-    # with and without ccar threshold
-    fig, ax = plt.subplots(1,2, sharex=True, sharey=True)
-    xygrid.elev.plot(alpha=0.6, vmin=0, vmax=float(xygrid.elev.max().values), cmap='Spectral',ax=ax[0])
-    xygrid.elev.plot(alpha=0.6, vmin=0, vmax=float(xygrid.elev.max().values), cmap='Spectral',ax=ax[1])
-    cm = plt.get_cmap('viridis')
-    num_colours = this_river_obj.network.reach_level.max() + 1
-    [ax[0].plot(*this_river_obj.network.iloc[i].geometry.xy,
-              c=cm(this_river_obj.network.iloc[i].reach_level/num_colours),
-              linewidth=1.5)
-        for i in range(this_river_obj.network.shape[0])]
-    [ax[1].plot(*this_river_obj.network.iloc[i].geometry.xy,
-              c=cm(this_river_obj.network.iloc[i].reach_level/num_colours),
-              linewidth=1.5)
-        for i in range(this_river_obj.network.shape[0]) if this_river_obj.network.iloc[i].ccar > 3]
-    plt.show()

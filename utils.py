@@ -3,6 +3,9 @@ import torch
 import shutil
 import rioxarray
 from pathlib import Path
+from matplotlib.path import Path as pltPath
+from matplotlib.patches import PathPatch
+from matplotlib.collections import PatchCollection  
 
 #######################
 ## utility functions ##
@@ -29,6 +32,22 @@ def normalise_df_simplex_subset(df, col_pattern):
     clipped_vals = df[norm_cols].clip(lower=0)
     df.loc[:, norm_cols] = clipped_vals.values / clipped_vals.sum(axis=1).values[...,None]
     return df
+
+########################
+## plotting functions ##
+########################
+
+def plot_polygon(ax, poly, **kwargs):
+    path = pltPath.make_compound_path(
+        pltPath(np.asarray(poly.exterior.coords)[:, :2]),
+        *[pltPath(np.asarray(ring.coords)[:, :2]) for ring in poly.interiors])
+
+    patch = PathPatch(path, **kwargs)
+    collection = PatchCollection([patch], **kwargs)
+    
+    ax.add_collection(collection, autolim=True)
+    ax.autoscale_view()
+    return collection
 
 ####################################
 ## Soil moisture netcdf functions ##
@@ -77,7 +96,7 @@ def merge_two_soil_moisture_days(this_sm_obj, this_day, prev_day,
 
     this_sm_trim = this_sm.isel(x=x_inds, y=y_inds)
     prev_sm_trim = prev_sm.isel(x=x_inds, y=y_inds)
-    this_sm_trim['theta'] = 0.5 * (this_sm_trim.theta * this_day_weight + 
+    this_sm_trim['theta'] = (this_sm_trim.theta * this_day_weight + 
         prev_sm_trim.theta * (1 - this_day_weight))
     
     return this_sm_trim
