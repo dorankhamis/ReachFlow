@@ -15,7 +15,8 @@ from sklearn.neighbors import NearestNeighbors
 
 from river_reach_modelling.utils import (
     zeropad_strint, trim_netcdf, calculate_soil_wetness,
-    merge_two_soil_moisture_days,  normalise_df_simplex_subset, plot_polygon
+    merge_two_soil_moisture_days,  normalise_df_simplex_subset,
+    plot_polygon, save_dict_of_dfs, load_dict_of_dfs
 )
 
 hj_base = "/gws/nopw/j04/hydro_jules/data/uk/"
@@ -51,9 +52,10 @@ class River:
         
         # save river network and id/dc_id
         self.network.to_parquet(this_dir + 'network.parquet', index=False)
-        pd.to_pickle({'river_id':self.river_id,
-                      'final_drainage_cell_id':self.final_drainage_cell_id},
-                     this_dir + 'river_id_numbers.pickle')
+  
+        # pd.to_pickle({'river_id':self.river_id,
+                      # 'final_drainage_cell_id':self.final_drainage_cell_id},
+                     # this_dir + 'river_id_numbers.pickle')
         
         # save catchment descriptors
         self.cds_increm.to_parquet(this_dir + 'descriptors_increm.parquet')
@@ -76,9 +78,10 @@ class River:
         
         self.network = gpd.read_parquet(this_dir + 'network.parquet')
         
-        river_ids = pd.read_pickle(this_dir + 'river_id_numbers.pickle')
-        self.river_id = river_ids['river_id']
-        self.final_drainage_cell_id = river_ids['final_drainage_cell_id']
+        end_of_river = self.network.query('tidal==True')
+        #river_ids = pd.read_pickle(this_dir + 'river_id_numbers.pickle')
+        self.river_id = end_of_river.id.values[0]
+        self.final_drainage_cell_id = end_of_river.dc_id.values[0]
         
         self.cds_increm = pd.read_parquet(this_dir + 'descriptors_increm.parquet')
         self.cds_cumul = pd.read_parquet(this_dir + 'descriptors_cumul.parquet')
@@ -294,7 +297,7 @@ class River:
                  '--', c='k', linewidth=1.5, alpha=0.8)
         plt.show()
 
-    def plot_catchment_averaged_values(self, var='precip', tp=0):
+    def plot_catchment_averaged_values(self, date_range, var='precip', tp=0):
         fig, ax = plt.subplots()
         cm = plt.get_cmap('viridis')
         num_colours = self.network.reach_level.max() + 1
@@ -306,6 +309,13 @@ class River:
         ]
 
         if var=='soil_wetness':
+            ''' Better to do this by inputting the_date rather than
+            a timepoint integer tp, and using 
+            if the_date.day==date_range[0].day:
+            self.soil_wetness_data[rid].loc[
+                        pd.to_datetime(the_date.date(), format='%Y-%m-%d')
+                    ].soil_wetness
+            '''
             if tp==0:
                 [plot_polygon(ax, self.boundaries_increm.loc[i],
                               facecolor=plt.cm.Blues(
@@ -441,22 +451,6 @@ class River:
             this_ccar = self.network.loc[self.network.id==rid, 'ccar'].values[0]
             
             self.flow_est[rid] = self.flow_data[nids[0]].assign(flow = this_flow*this_ccar).fillna(method='ffill').fillna(method='bfill')
-
-        ### OLD:
-        # matched_gauges = pd.merge_asof(
-            # self.cds_cumul.reset_index().sort_values('CCAR')[['index','CCAR']],
-            # gauges[['nrfa_id', 'catchment-area']].sort_values('catchment-area'),
-            # left_on="CCAR", right_on="catchment-area",
-            # allow_exact_matches=True, direction="nearest"
-        # ).set_index('index')
-        # self.flow_est = {}
-        # for rid in matched_gauges.index:
-            # mg = matched_gauges.loc[rid]
-            # nid = mg['nrfa_id']
-            # ccar_norm = mg['catchment-area']
-            # ccar_this = mg['CCAR']
-            # self.flow_est[rid] = ccar_this * self.flow_data[nid] / ccar_norm
-            # self.flow_est[rid] = self.flow_est[rid].fillna(method='ffill').fillna(method='bfill')
 
     def load_precip_data(self, date_range, data_dir):
         # accumulation of gear rainfall is foward to the hour label, 
@@ -600,7 +594,6 @@ class River:
             index=self.network.id
         )
         return this_sm_obj, vwc_quantiles_trim
-        
 
     def load_soil_wetness(self, date_range, vwc_quantiles, sm_data_dir):
         # do this for the antecedent time point, but then also for every
@@ -762,24 +755,28 @@ class River:
         self.mean_urbext = pd.DataFrame({'QUEX':self.mean_urbext.flatten()},
                                         index=self.cds_increm.index)
     
-    def save_event_data(self, outdir):        
-        pd.to_pickle(self.flow_data, outdir + '/flow_data.pickle')
-        pd.to_pickle(self.flow_est, outdir + '/flow_estimates.pickle')
-        pd.to_pickle(self.precip_data, outdir + '/precip_data.pickle')
-        pd.to_pickle(self.soil_wetness_data, outdir + '/soilwetness_data.pickle')
-        pd.to_pickle(self.antecedent_soil_wetness, outdir + '/antecedent_soilwetness.pickle')
-        pd.to_pickle(self.mean_urbext, outdir + '/mean_urbext.pickle')
-        pd.to_pickle(self.mean_lc, outdir + '/mean_landcover.pickle')
+    def save_event_data(self, event, outdir):        
+        save_dict_of_dfs(self.flow_data, outdir, 'flow_obs', out_format='parquet')
+        save_dict_of_dfs(self.flow_est, outdir, 'flow_est', out_format='parquet')
+        save_dict_of_dfs(self.precip_data, outdir, 'precip', out_format='parquet')
+        save_dict_of_dfs(self.soil_wetness_data, outdir, 'soil_wetness', out_format='csv')
         
-    def load_event_data(self, outdir):        
-        self.flow_data = pd.read_pickle(outdir + '/flow_data.pickle')
-        self.flow_est = pd.read_pickle(outdir + '/flow_estimates.pickle')
-        self.precip_data = pd.read_pickle(outdir + '/precip_data.pickle')
-        self.soil_wetness_data = pd.read_pickle(outdir + '/soilwetness_data.pickle')
-        self.antecedent_soil_wetness = pd.read_pickle(outdir + '/antecedent_soilwetness.pickle')
-        self.mean_urbext = pd.read_pickle(outdir + '/mean_urbext.pickle')
-        self.mean_lc = pd.read_pickle(outdir + '/mean_landcover.pickle')        
-    
+        self.antecedent_soil_wetness.reset_index().to_csv(outdir + '/antecedent_soil_wetness.csv', index=False)
+        self.mean_urbext.reset_index().to_csv(outdir + '/mean_urbext.csv', index=False)
+        self.mean_lc.reset_index().to_csv(outdir + '/mean_landcover.csv', index=False)
+        pd.DataFrame(event).T.to_csv(outdir + '/event_info.csv', index=False)
+        
+    def load_event_data(self, outdir):
+        self.flow_data = load_dict_of_dfs(outdir + '/flow_obs/', out_format='parquet')
+        self.flow_est = load_dict_of_dfs(outdir + '/flow_est/', out_format='parquet')
+        self.precip_data = load_dict_of_dfs(outdir + '/precip/', out_format='parquet')
+        self.soil_wetness_data = load_dict_of_dfs(outdir + '/soil_wetness/', out_format='csv')
+        
+        self.antecedent_soil_wetness = pd.read_csv(outdir + '/antecedent_soil_wetness.csv').set_index('id')
+        self.mean_urbext = pd.read_csv(outdir + '/mean_urbext.csv').set_index('id')
+        self.mean_lc = pd.read_csv(outdir + '/mean_landcover.csv').set_index('id')
+        self.event = pd.read_csv(outdir + '/event_info.csv').iloc[0]
+        
 
 def load_event_data(rid, date_range, vwc_quantiles=None):
     ## choose catchment and load river object

@@ -349,18 +349,24 @@ if __name__=="__main__":
         
         river_obj.plot_river(grid=xygrid.elev, stations=False)
     
+    
+    
+    
         ############################
         ## generate pre-primed event objects
         # rid == 66978 has lots of stations in!
         train_events.sort_values('basin_area')
         outdir = '/home/users/doran/data_dump/catchment_reaches/event_data/'
         for i in range(50):
+            print(i)
             river_obj, rid, date_range, event = sample_event(train_events, vwc_quantiles)
             
             savedir = outdir + f'/{rid}_{i}/'
             Path(savedir).mkdir(exist_ok = True, parents = True)
+
+            river_obj.save_event_data(event, savedir)
             
-            river_obj.save_event_data(savedir)
+            
             
         # # then to load an event:
         rid = int(savedir.split('/')[-2].split('_')[0])

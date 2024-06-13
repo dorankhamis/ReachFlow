@@ -1,7 +1,10 @@
 import numpy as np
+import pandas as pd
 import torch
 import shutil
 import rioxarray
+import os
+import glob
 from pathlib import Path
 from matplotlib.path import Path as pltPath
 from matplotlib.patches import PathPatch
@@ -32,6 +35,37 @@ def normalise_df_simplex_subset(df, col_pattern):
     clipped_vals = df[norm_cols].clip(lower=0)
     df.loc[:, norm_cols] = clipped_vals.values / clipped_vals.sum(axis=1).values[...,None]
     return df
+
+def save_dict_of_dfs(dict_to_save, parent_path, new_dir_name, out_format='csv'):
+    out_dir = parent_path + f'/{new_dir_name}/'
+    Path(out_dir).mkdir(exist_ok = True, parents = True)
+    for key in dict_to_save:
+        dict_to_save[key].index.name = 'DATE_TIME'
+        dat_to_save = dict_to_save[key].reset_index()
+        if out_format=='parquet':
+            save_path = out_dir + f'{key}.parquet'
+            dat_to_save.to_parquet(save_path, index=False)
+        elif out_format=='csv':
+            save_path = out_dir + f'{key}.csv'
+            dat_to_save.to_csv(save_path, index=False)
+        else:
+            return 1
+            
+def load_dict_of_dfs(path_to_files, out_format='csv'):
+    filepaths = glob.glob(path_to_files + f'/*{out_format}')
+    out_dict = {}
+    for ff in filepaths:     
+        if out_format=='parquet':                
+            data = pd.read_parquet(ff)
+        elif out_format=='csv':
+            data = pd.read_csv(ff)
+        else:
+            return 1
+        data['DATE_TIME'] = pd.to_datetime(data.DATE_TIME)
+        data = data.set_index('DATE_TIME')
+        key = int(os.path.split(ff)[-1].replace(f'.{out_format}',''))
+        out_dict[key] = data
+    return out_dict
 
 ########################
 ## plotting functions ##

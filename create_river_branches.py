@@ -11,7 +11,7 @@ import datetime
 from pathlib import Path
 from shapely.geometry import box, Point, LineString
 
-from river_reach_modelling.catchment_wrangling import *
+from river_reach_modelling.catchment_wrangling import wrangle_descriptors
 from river_reach_modelling.river_class import River
 from river_reach_modelling.river_utils import *
 from river_reach_modelling.utils import zeropad_strint, trim_netcdf, calculate_soil_wetness, merge_two_soil_moisture_days
