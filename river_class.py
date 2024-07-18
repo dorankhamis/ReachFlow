@@ -52,11 +52,7 @@ class River:
         
         # save river network and id/dc_id
         self.network.to_parquet(this_dir + 'network.parquet', index=False)
-  
-        # pd.to_pickle({'river_id':self.river_id,
-                      # 'final_drainage_cell_id':self.final_drainage_cell_id},
-                     # this_dir + 'river_id_numbers.pickle')
-        
+
         # save catchment descriptors
         self.cds_increm.to_parquet(this_dir + 'descriptors_increm.parquet')
         self.cds_cumul.to_parquet(this_dir + 'descriptors_cumul.parquet')
@@ -78,8 +74,7 @@ class River:
         
         self.network = gpd.read_parquet(this_dir + 'network.parquet')
         
-        end_of_river = self.network.query('tidal==True')
-        #river_ids = pd.read_pickle(this_dir + 'river_id_numbers.pickle')
+        end_of_river = self.network.query('tidal==True')        
         self.river_id = end_of_river.id.values[0]
         self.final_drainage_cell_id = end_of_river.dc_id.values[0]
         
@@ -95,6 +90,9 @@ class River:
         self.cds_increm = normalise_df_simplex_subset(self.cds_increm, "HGS")
         self.cds_increm = normalise_df_simplex_subset(self.cds_increm, "LC1990")
         self.cds_increm = normalise_df_simplex_subset(self.cds_increm, "LC2015")
+        
+        self.cds_increm.index.name = 'id'
+        self.cds_cumul.index.name = 'id'
                 
         self.boundaries_cumul = gpd.read_file(this_dir + 'boundaries_cumul.shp').set_index('index')['geometry']
         self.boundaries_increm = gpd.read_file(this_dir + 'boundaries_increm.shp').set_index('index')['geometry']
@@ -560,7 +558,7 @@ class River:
         # do this only once
         vwc_quantiles_trim = vwc_quantiles.isel(x=self.soilmoisture_parent_bounds['x_inds'],
                                                 y=self.soilmoisture_parent_bounds['y_inds'])
-
+        #if (date_range[0].hour == 0) and (date_range[0].minute == 0):
         prev_day = date_range[0] - pd.to_timedelta("1D")
         merged_sm = merge_two_soil_moisture_days(
             this_sm_obj,
@@ -598,10 +596,14 @@ class River:
     def load_soil_wetness(self, date_range, vwc_quantiles, sm_data_dir):
         # do this for the antecedent time point, but then also for every
         # time where we click over into a new day?
+        # because this is daily, i.e. accounting for all of the current day's rainfall,
+        # at the new day tick we should really load up the previous day's soil moisture
         # "assimilate" the soil wetness into the state vector at start of each day?
         res = 1000
         
-        uniq_days = date_range[(date_range.hour == 0) & (date_range.minute == 0)] # "new days" not including current day
+        new_days = date_range[(date_range.hour == 0) & (date_range.minute == 0)] # "new days" not including current day
+        new_days = pd.to_datetime(np.setdiff1d(new_days, date_range[0:1])) # the "real" time
+        uniq_days = new_days - pd.to_timedelta("1D") # the previous day to call daily soil moisture value from
         uniq_years = np.unique(uniq_days.year)        
         uniq_months = {str(yy) : list(set(uniq_days.month[uniq_days.year==yy])) for yy in np.unique(uniq_days.year)}
         
@@ -645,47 +647,34 @@ class River:
                         soil_wetness_dict[rid] = cav
                         
         for k in soil_wetness_dict.keys():
-            soil_wetness = pd.DataFrame({'soil_wetness':soil_wetness_dict[k], 'DATE_TIME':uniq_days})
+            soil_wetness = pd.DataFrame({'soil_wetness':soil_wetness_dict[k], 'DATE_TIME':new_days})
             self.soil_wetness_data[k] = soil_wetness.set_index('DATE_TIME')
 
     def aggregate_landcover_classes(self):
         # raw classes
         '''
         Broadleaved woodland    1
-        ‘Coniferous Woodland’   2
-        ‘Arable and Horticulture’   3
-        ‘Improved Grassland’    4
-        ‘Neutral Grassland’ 5
-        ‘Calcareous Grassland’  6
+        Coniferous Woodland  2
+        Arable and Horticulture   3
+        Improved Grassland    4
+        Neutral Grassland 5
+        Calcareous Grassland  6
         Acid grassland  7
-        ‘Fen, Marsh and Swamp’  8
+        Fen, Marsh and Swamp 8
         Heather 9
         Heather grassland   10
-        ‘Bog’   11
-        ‘Inland Rock’   12
+        Bog  11
+        Inland Rock  12
         Saltwater   13
         Freshwater  14
-        ‘Supra-littoral Rock’   15
-        ‘Supra-littoral Sediment’   16
-        ‘Littoral Rock’ 17
+        Supra-littoral Rock   15
+        Supra-littoral Sediment  16
+        Littoral Rock 17
         Littoral sediment   18
         Saltmarsh   19
         Urban   20
         Suburban    21
         '''
-        # # from landcover map aggregations
-        # c_agg = {
-            # '1':[1], # Broadleaf woodland
-            # '2':[2], # Coniferous woodland
-            # '3':[3], # Aarable
-            # '4':[4], # Improved grassland
-            # '5':[5,6,7,8], # Semi-natural grassland
-            # '6':[9,10,11,12], # Mountain, heath and bog
-            # '7':[13], # Saltwater
-            # '8':[14], # Freshwater
-            # '9':[15,16,17,19], # Coastal
-            # '10':[20,21] # Built-up areas and gardens
-        # }
         # my own hydrological aggregations
         c_agg = {
             '1':[1], # Broadleaf woodland
@@ -695,26 +684,14 @@ class River:
             '5':[8,11,19], # Wetlands
             '6':[9,10], # Shrubs
             '7':[12,15,16,17,18], # Bare soil and rock
-            '8':[13], # Saltwater
-            '9':[14], # Freshwater # merge both water classes?    
-            '10':[20,21] # Built-up areas and gardens
+            '8':[13, 14], # Saltwater
+            #'9':[14], # Freshwater # merge both water classes?    
+            '9':[20,21] # Built-up areas and gardens
         }
-        agg_1990 = []
-        agg_2015 = []
-        for k in c_agg.keys():
-            agg_1990.append(self.cds_increm[[f'LC1990_{zeropad_strint(n)}' for n in c_agg[k]]].sum(axis=1))
-            agg_2015.append(self.cds_increm[[f'LC2015_{zeropad_strint(n)}' for n in c_agg[k]]].sum(axis=1))
-            
-        agg_1990 = pd.concat(agg_1990, axis=1)
-        agg_1990.columns = [f'LC1990_{zeropad_strint(int(n))}' for n in c_agg.keys()]
-        agg_2015 = pd.concat(agg_2015, axis=1)
-        agg_2015.columns = [f'LC2015_{zeropad_strint(int(n))}' for n in c_agg.keys()]
         
-        # remove negatives (they are small) and renormalize to 1
-        agg_2015 = agg_2015.clip(lower=0)
-        agg_2015 = (agg_2015 / agg_2015.sum(axis=1).values[...,None])
-        agg_1990 = agg_1990.clip(lower=0)
-        agg_1990 = (agg_1990 / agg_1990.sum(axis=1).values[...,None])
+        # do incremental
+        agg_1990 = aggregate_lc_classes(self.cds_increm, 1990, c_agg)
+        agg_2015 = aggregate_lc_classes(self.cds_increm, 2015, c_agg)
         
         self.cds_increm = self.cds_increm.drop(
             [col for col in self.cds_increm if col.startswith('LC')], axis=1
@@ -729,31 +706,44 @@ class River:
             .merge(agg_2015.reset_index(), on=indexname)
             .set_index(indexname)
         )
+        
+        # do cumulative
+        agg_1990 = aggregate_lc_classes(self.cds_cumul, 1990, c_agg)
+        agg_2015 = aggregate_lc_classes(self.cds_cumul, 2015, c_agg)
+        
+        self.cds_cumul = self.cds_cumul.drop(
+            [col for col in self.cds_cumul if col.startswith('LC')], axis=1
+        )
+        
+        indexname = self.cds_cumul.index.name
+        if indexname is None:
+            indexname = 'index'
+        
+        self.cds_cumul = (self.cds_cumul.reset_index()
+            .merge(agg_1990.reset_index(), on=indexname)
+            .merge(agg_2015.reset_index(), on=indexname)
+            .set_index(indexname)
+        )
     
     def calculate_lc_for_event(self):        
         mean_year = self.precip_data[self.river_id].index.mean().year
-        if mean_year > 2015:
-            mean_year = 2015
-        elif mean_year < 1990:
-            mean_year = 1990
-        self.mean_lc = (
-            (1-(mean_year - 1990)/(2015-1990)) * self.cds_increm.loc[:, self.lc_1990_names].values + 
-            (1-(2015 - mean_year)/(2015-1990)) * self.cds_increm.loc[:, self.lc_2015_names].values
-        )
-        self.mean_lc = pd.DataFrame(self.mean_lc, index=self.cds_increm.index)
-        self.lc_names = [f'LC_{zeropad_strint(int(n))}' for n in range(1, self.mean_lc.shape[1]+1)]
-        self.mean_lc.columns = self.lc_names        
         
-        if mean_year > 2000:
-            mean_year = 2000
-        elif mean_year < 1990:
-            mean_year = 1990
-        self.mean_urbext = (
-            (1-(mean_year - 1990)/(2000-1990)) * self.cds_increm.loc[:, ["QUEX"]].values + 
-            (1-(2000 - mean_year)/(2000-1990)) * self.cds_increm.loc[:, ["QUE2"]].values
-        )
-        self.mean_urbext = pd.DataFrame({'QUEX':self.mean_urbext.flatten()},
-                                        index=self.cds_increm.index)
+        self.mean_lc = average_lc_years(self.cds_increm, mean_year,
+                                        1990, 2015, self.lc_1990_names,
+                                        self.lc_2015_names)
+        self.lc_names = [f'LC_{zeropad_strint(int(n))}' for n in range(1, self.mean_lc.shape[1]+1)]
+        self.mean_lc.columns = self.lc_names
+        
+        self.mean_lc_cumul = average_lc_years(self.cds_cumul, mean_year,
+                                              1990, 2015, self.lc_1990_names,
+                                              self.lc_2015_names)        
+        self.mean_lc_cumul.columns = self.lc_names
+        
+        # and urban extent
+        self.mean_urbext = average_urbext_years(self.cds_increm, mean_year,
+                                                1990, 2000, ["QUEX"], ["QUE2"])
+        self.mean_urbext_cumul = average_urbext_years(self.cds_cumul, mean_year,
+                                                      1990, 2000, ["QUEX"], ["QUE2"])
     
     def save_event_data(self, event, outdir):        
         save_dict_of_dfs(self.flow_data, outdir, 'flow_obs', out_format='parquet')
@@ -776,30 +766,65 @@ class River:
         self.mean_urbext = pd.read_csv(outdir + '/mean_urbext.csv').set_index('id')
         self.mean_lc = pd.read_csv(outdir + '/mean_landcover.csv').set_index('id')
         self.event = pd.read_csv(outdir + '/event_info.csv').iloc[0]
+
+def aggregate_lc_classes(df, year, agg_dict):
+    agg_list = []    
+    for k in agg_dict.keys():
+        agg_list.append(df[[f'LC{year}_{zeropad_strint(n)}' for n in agg_dict[k]]].sum(axis=1))        
         
+    agg_list = pd.concat(agg_list, axis=1)
+    agg_list.columns = [f'LC{year}_{zeropad_strint(int(n))}' for n in agg_dict.keys()]
+    
+    # remove negatives (they are small) and renormalize to 1    
+    agg_list = agg_list.clip(lower=0)
+    agg_list = (agg_list / agg_list.sum(axis=1).values[...,None])
+    return agg_list
 
-def load_event_data(rid, date_range, vwc_quantiles=None):
-    ## choose catchment and load river object
-    river_obj = River()
-    river_obj.load(save_rivers_dir, rid)
+def average_lc_years(df, event_year, year_low, year_high, names_low, names_high):
+    if event_year > year_high:
+        mean_year = year_high
+    elif event_year < year_low:
+        mean_year = year_low
+    else:
+        mean_year = event_year
+    
+    denom = year_high - year_low
+    mean_lc = (
+        (1 - (mean_year - year_low) / denom) * df.loc[:, names_low].values + 
+        (1 - (year_high - mean_year) / denom) * df.loc[:, names_high].values
+    )
+    mean_lc = pd.DataFrame(mean_lc, index=df.index)
+    return mean_lc
 
-    ## load flow observations
-    river_obj.load_flow_data(date_range, flow_dir) # creates river_obj.flow_data
+def average_urbext_years(df, event_year, year_low, year_high, names_low, names_high):
+    if event_year > year_high:
+        mean_year = year_high
+    elif event_year < year_low:
+        mean_year = year_low
+    else:
+        mean_year = event_year
+     
+    denom = year_high - year_low   
+    mean_urbext = (
+        (1 - (mean_year - year_low) / denom) * df.loc[:, names_low].values + 
+        (1 - (year_high - mean_year) / denom) * df.loc[:, names_high].values
+    )
+    mean_urbext = pd.DataFrame({'QUEX':mean_urbext.flatten()}, index=df.index)
+    return mean_urbext
 
-    # generate initial flow condition across entire river network
+def load_event_data(rid, date_range, river_obj=None, vwc_quantiles=None):
+    if river_obj is None:
+        river_obj = River()
+        river_obj.load(save_rivers_dir, rid)
+    
+    river_obj.load_flow_data(date_range, flow_dir) # creates river_obj.flow_data    
     river_obj.generate_teacher_forcing_flows() # creates river_obj.flow_est
-
-    ## load precip
     river_obj.load_precip_data(date_range, gear_dir) # populates river_obj.precip_data
-    # what about antecedent precip?
 
-    ## load SM
     if vwc_quantiles is None:
-        vwc_quantiles = rioxarray.open_rasterio(sm_data_dir + '/vwc_quantiles.nc')
-        
+        vwc_quantiles = rioxarray.open_rasterio(sm_data_dir + '/vwc_quantiles.nc')        
     river_obj.load_soil_wetness(date_range, vwc_quantiles, sm_data_dir)  # populates river_obj.soil_wetness_data
 
     ## approximate land cover from 1990 and 2015 values
-    river_obj.calculate_lc_for_event()
-    
+    river_obj.calculate_lc_for_event() # creates river_obj.mean_lc and river_obj.mean_urbext    
     return river_obj

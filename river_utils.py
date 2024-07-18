@@ -250,7 +250,7 @@ def calculate_incremental_catchment_descriptors(draincells, segments, parent_idx
             ICAR = ccar_increment,
             QDPL = dpl_bar,
             REACH_LENGTH = reach_length,
-            REACH_SLOPE = reach_slope            
+            REACH_SLOPE = reach_slope # in degrees
         )
     }
     
