@@ -16,49 +16,6 @@ from river_reach_modelling.river_class import River
 from river_reach_modelling.river_utils import *
 from river_reach_modelling.utils import zeropad_strint, trim_netcdf, calculate_soil_wetness, merge_two_soil_moisture_days
 
-'''
-Should also make note of the NRFA "factors affecting discharge" flags?
-Though we would only have those sparesly thoughout the network
-'''
-
-'''
-Model outline idea:
-    - for each sub catchment calculate mapping from SM, antecedent precip,
-    catchment descriptors and time of year to initial catchment state S(t0)
-    and initial flow condition F(t0).
-    
-    Then, at each time step, and starting from most upstream reaches:
-    
-    - calculate the local in-flow from the catchment to the river reach,
-    L(t_i), from the precipitation, other met data, catchment descriptors
-    and current catchment state S(t_i - 1). Also update the catchment state
-    to S(t_i).
-    - Sum flows from all upstream reaches that drain directly into this
-    catchment to get upstream contribution, U(t_i) = sum(F^{k->m}(t_i)),
-    where we are indicating with superscripts all flows from drainage cells k leading to reach m.
-    - Stack L(t) with catchment descriptors as local input; U(t) with 
-    reach slope and reach length as upstream input; and previous flow 
-    timeseries F(t) as flow history input. 
-    Use transformer/attention calculation across t=[t0, t_i] 
-    or t=[t0, t_i - 1] for flow history, to get current flow value F(t_i).
-    - This may (will?) look like 3 flow values, F_l, F_u and F_h, that we sum to 
-    find the full flow response.
-    
-    
-For water quality model, idea was to make use of the Local inputs and 
-Upstream flows to "dilute" pollutants/nutrients:
-    - calculate local Pollutant inputs W_l(t_i) from precipitation and 
-    landcover and other catchment data. The "density" of pollutant 
-    entering the reach from the local catchment is then W_l(t_i) = L(t_i) * Wa(t_i)
-    (either in physical units or some sort of latent vector multiplication?) 
-    where Wa is some "absolute" measure of pollutant from landcover etc 
-    - Upstream WQ densities normalised by weighting from 
-    upstream flows: W_u(t_i) = sum(F^{k->m}(t_i) * W^{k}(t_i)) / sum(F^{k->m}(t_i))
-    - Then water quality at downstream drainage cell W(t_i) can be solved as 
-    the flow above, W_l, W_u, and W_h = f(W, F) (the evolution of the "history").
-    That is, use transformer/attention calculation across t=[t0, t_i]  for W_l and W_u
-    and across t=[t0, t_i - 1] for W_h to get current pollutant density value W(t_i).
-'''
 
 ## load individual river reaches
 hjflood_base = "/gws/nopw/j04/hydro_jules/data/uk/flood_events/"
@@ -187,13 +144,12 @@ if MATCH_GAUGES_TO_REACHES:
     gauge_river_map.reset_index(drop=True).to_csv(hjflood_base + '/station_to_river_map.csv', index=False)
 
 
+
 '''
 ##############################
 ######### TESTING ############
 ##############################
 '''
-
-
 if False:
     ## loading all rivers to find normalisations of all static quantities
     import os
