@@ -48,6 +48,7 @@ if __name__=="__main__":
 
     run_as = 'par'
     np.random.seed(42)
+    max_events_per_npz = 50
     outpath = hj_base + '/flood_events/event_encoding/'
     
     gauge_river_map = pd.read_csv(hj_base + '/flood_events/station_to_river_map.csv')
@@ -120,7 +121,9 @@ if __name__=="__main__":
         gauge_events = flood_event_df[flood_event_df.nrfa_id==nrfa_id]
         rid = gauge_events.id.values[0]
         station_ccar = gauge_events.station_ccar.values[0]
-        all_events = gauge_events.sample(n=gauge_events.shape[0], replace=False)
+        all_events = gauge_events.sample(n=gauge_events.shape[0],
+                                         replace=False,
+                                         random_state=42)        
         if max_events_per_basin>0:
             all_events = all_events.iloc[:max_events_per_basin]
 
@@ -137,29 +140,43 @@ if __name__=="__main__":
         )
         gauge_station_data[nrfa_id]['station_ccar'] = station_ccar
         
-        if run_as=='serial':
-            all_event_data = {}
-            start_time = time.perf_counter()
-            for ii in range(all_events.shape[0]): 
-                event = all_events.iloc[ii]
-                feature_timeseries = process_one_event(
-                    event,
+        n_chunks = len(all_events) // max_events_per_npz
+        leftover = len(all_events) - max_events_per_npz * n_chunks
+        chunk_sizes = np.repeat(max_events_per_npz, n_chunks)
+        if leftover>0:
+            chunk_sizes = np.hstack([chunk_sizes, leftover])    
+        csum = np.hstack([0, np.cumsum(chunk_sizes)])
+        
+        for ei in range(len(csum)-1):
+            npz_savename = outpath + f'nrfagauge_{nrfa_id}_river_{rid}_eventslice_{ei}.npz'
+            if Path(npz_savename).exists():
+                continue
+            
+            event_slice = all_events.iloc[csum[ei]:csum[ei+1]]
+        
+            if run_as=='serial':
+                all_event_data = {}
+                start_time = time.perf_counter()
+                for ii in range(event_slice.shape[0]): 
+                    event = event_slice.iloc[ii]
+                    feature_timeseries = process_one_event(
+                        event,
+                        gauge_station_data,
+                        average_catchment_data,
+                        vwc_quantiles,
+                        verbose=True
+                    )            
+                    all_event_data[f'{event.nrfa_id}_{event.Event}'] = feature_timeseries
+                finish_time = time.perf_counter()
+                print(f"Finished event slice in {(finish_time-start_time)/60.} minutes")        
+            elif run_as=='par':
+                all_event_data = run_events_parallel(
+                    event_slice,
                     gauge_station_data,
                     average_catchment_data,
                     vwc_quantiles,
-                    verbose=True
-                )            
-                all_event_data[f'{event.nrfa_id}_{event.Event}'] = feature_timeseries
-            finish_time = time.perf_counter()
-            print(f"Finished event slice in {(finish_time-start_time)/60.} minutes")        
-        elif run_as=='par':
-            all_event_data = run_events_parallel(
-                all_events,
-                gauge_station_data,
-                average_catchment_data,
-                vwc_quantiles,
-                ncpu=10
-            )
-        
-        np.savez(outpath + f'{nrfa_id}_{rid}.npz', **all_event_data)    
+                    ncpu=10
+                )
+            
+            np.savez(npz_savename, **all_event_data)    
 

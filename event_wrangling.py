@@ -10,11 +10,17 @@ from river_reach_modelling.clip_catchment_boundaries import grab_catchment_rainf
 from river_reach_modelling.catchment_wrangling import wrangle_descriptors
 
 # define the path to the data
-basedir = '/gws/nopw/j04/hydro_jules/data/uk/flood_events/'
-datadir = basedir + '/NFEA_total_flow-based_v6_csv/'
-statdir = basedir + '/NFEA_total_flow-based_v6_statistics/'
+basedir = '/gws/nopw/j04/hydro_jules/data/uk/flood_events/flood_event_archive/'
+#basedir = '/gws/nopw/j04/hydro_jules/data/uk/flood_events/'
+#datadir = basedir + '/old_event_archive/NFEA_total_flow-based_v6_csv/'
+#statdir = basedir + '/old_event_archive/NFEA_total_flow-based_v6_statistics/'
 
-def load_statistics():
+
+def load_statistics():    
+    stats_df = pd.read_csv(basedir + "/event_statistics.csv")
+    return stats_df
+
+def load_old_statistics():
     # load event statistics
     stats_fs = glob.glob(statdir + '*.csv')
     stats_df = pd.DataFrame()
@@ -125,60 +131,3 @@ def load_event(stats_df, l=None, event_num=None, station_num=None,
         'flag_str':flag_str
     }
     return dat, meta
-    
-if False:
-    # nn inputs tests
-    x = torch.from_numpy(dat.loc[pd.date_range(start_date, end_date, freq="15min")][['FlowSplined','Rain']].values).T.to(torch.float32)
-    x = x[None,...]
-
-if False:
-    # hysteresis
-    dat = dat[['DateTime', 'Rain', 'Flow']].dropna()
-    dat['time'] = (dat['DateTime'] - dat['DateTime'].iloc[0]).dt.total_seconds() / (15*60)
-    #dat = dat.assign(station_id = station_num, event_id = event_num)
-    dat['g'] = - np.gradient(dat['Flow'], dat['time']) / dat['Flow']
-
-        
-    sns.scatterplot(x='Flow', y='g', hue='time', data=dat.iloc[30:])
-    plt.show()
-    
-    sns.scatterplot(x='Flow', y='g', hue='Rain_spread', data=dat)
-    plt.show()
-    
-    sns.barplot(x='DateTime', y='Rain', data=dat)
-    sns.lineplot(x='DateTime', y='Flow', data=dat)    
-    plt.show()
-
-
-if False:
-    
-    l = 24*4
-    dat, meta = load_event(dg.stats_df,
-                           l=l,
-                           event_num=None,
-                           station_num=None,
-                           antecedent_rain_days=0,
-                           catch_descs=dg.catch_desc)
-    print(dat)
-    plt.plot(dat.FlowSplined)
-    plt.plot(dat.Rain)
-    plt.show()
-    
-    # defining bounds on event length
-    lower_bound = 24*4 # one day
-    upper_bound = 30*24*4 # one month
-    new_df = dg.stats_df[(dg.stats_df.EventDuration_15min >= lower_bound) &
-                         (dg.stats_df.EventDuration_15min <= upper_bound)]
-    short_df = dg.stats_df[(dg.stats_df.EventDuration_15min < lower_bound)]
-    long_df = dg.stats_df[(dg.stats_df.EventDuration_15min > upper_bound)]
-                
-    fig, ax = plt.subplots(1,3)
-    ax[0].hist(short_df.EventDuration_15min, bins=100)
-    ax[1].hist(new_df.EventDuration_15min, bins=100)
-    ax[2].hist(long_df.EventDuration_15min, bins=100)
-    plt.show()
-
-    
-    
-    
-    

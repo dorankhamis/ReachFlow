@@ -9,4 +9,4 @@
 
 source /home/users/doran/software/envs/pytorch/bin/activate
 #python ./create_precip_normed_event_features.py ${SLURM_ARRAY_TASK_ID} 30 10 50 100
-python ./create_precip_normed_event_features.py ${SLURM_ARRAY_TASK_ID} 30 10 0 0
+python ../create_precip_normed_event_features.py ${SLURM_ARRAY_TASK_ID} 30 10 0 0

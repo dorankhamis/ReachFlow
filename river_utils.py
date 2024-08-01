@@ -83,12 +83,9 @@ def calculate_mean_drainage_path_length(this_segment, increm_boundary):
     to drainage cell on a simply connected network representing a coarse
     grid that overlays the catchment boundary 
     '''
-    npts_in_ctch = 0
-    #graph_connected = False
-    dpl_res = 100
-    #print(this_segment)
-    while npts_in_ctch==0:
-        #print(dpl_res)
+    npts_in_ctch = 0    
+    dpl_res = 100    
+    while npts_in_ctch==0:        
         # find points within the incremental catchment boundary
         pts_ext = np.asarray(increm_boundary.exterior.coords)[:, :2]
         xvec = np.arange(pts_ext.min(axis=0)[0], pts_ext.max(axis=0)[0], dpl_res)
@@ -124,20 +121,13 @@ def calculate_mean_drainage_path_length(this_segment, increm_boundary):
         knn_graph = knn_graph.astype(np.int32)
         nodes = list(knn_graph[:,0])
         
-        # only use one-hop neighbours, including diagonal hops
-        #dist_thresh = np.sqrt(dpl_res**2 + dpl_res**2)
+        # only use one-hop neighbours, including diagonal hops        
         edges = extract_edges(knn_graph)
         
         G = nx.Graph()
         G.add_nodes_from(nodes) # simply a list
         G.add_edges_from(edges)
-        
-        # just skip disconnected bits of catchment for ease...
-        # graph_connected = nx.is_connected(G)
-        # if not graph_connected and dpl_res>30:
-            # dpl_res -= 10
-            # continue
-            
+                    
         dist_attrs = {}
         for e in edges:
             if e[1] in knn_graph[e[0],:]:
@@ -206,7 +196,7 @@ def calculate_incremental_catchment_descriptors(draincells, segments, parent_idx
 
     if reach_slope<0: reach_slope = 0
 
-    # check values of each descriptor against estimated ranges:
+    # check values of each descriptor against estimated ranges: (errors from rounding descriptor values)
     # if outside the range and ICAR is small, use the average of the upstream values
     '''    
     standard_descs = [ # that we can simply treat by multiplying by area
@@ -350,99 +340,3 @@ def add_nrfa_stations_to_rivers(nrfa_station_metadata, draincells, save_rivers_d
         new_river.save_flow_stations(save_rivers_dir)
 
 
-
-
-if False:
-    def merge_incremental_catchment_descriptors(river_obj, stomp_id, absorb_id, desc_to_use):
-        # assumes boundaries and reach linestrings have already been merged into absorb_id
-        # note: we lose stomp_id from river_obj.cds_increm
-        cds_u = river_obj.cds_increm.loc[stomp_id][desc_to_use] * river_obj.cds_increm.loc[stomp_id]['CCAR']
-        cds_d = river_obj.cds_increm.loc[absorb_id][desc_to_use] * river_obj.cds_increm.loc[absorb_id]['CCAR']
-        new_cds = (cds_u + cds_d) / (river_obj.cds_increm.loc[stomp_id]['CCAR'] + river_obj.cds_increm.loc[absorb_id]['CCAR'])
-        
-        ccar_increment = river_obj.boundaries_increm.at[absorb_id].area
-        reach_length = new_network.at[absorb_id, 'geometry'].length
-        reach_slope = np.rad2deg(np.arcsin(
-            (river_obj.cds_increm.at[stomp_id, 'REACH_LENGTH'] * 
-                np.sin(np.deg2rad(river_obj.cds_increm.at[stomp_id, 'REACH_SLOPE'])) + 
-            river_obj.cds_increm.at[absorb_id, 'REACH_LENGTH'] * 
-                np.sin(np.deg2rad(river_obj.cds_increm.at[absorb_id, 'REACH_SLOPE']))) /
-            new_network.at[absorb_id, 'geometry'].length
-        ))
-        new_cds = pd.concat([new_cds, 
-            pd.Series({'ICAR': ccar_increment,
-                       'REACH_LENGTH': reach_length,
-                       'REACH_SLOPE': reach_slope})]
-        )
-        new_cds.name = absorb_id
-        new_cds_increm = river_obj.cds_increm.copy()
-        new_cds_increm.loc[absorb_id] = new_cds
-        new_cds_increm = new_cds_increm.drop(stomp_id)
-        return new_cds_increm
-
-    def multiline_to_single_line(geometry):
-        if isinstance(geometry, LineString):
-            return geometry
-        coords = list(map(lambda part: list(part.coords), geometry.geoms))
-        flat_coords = [Point(*point) for segment in coords for point in segment]
-        return LineString(flat_coords)
-
-    def stomp_small_catchments(river_obj, area_threshold=1e6):
-        # broken!! and also we have a problem at confluences!
-        small_areas = (river_obj.calculate_areas()
-            .drop(river_obj.river_id)
-            .sort_values('area')
-            .query(f'area < {area_threshold}')
-        )
-        small_catchments_present = True if small_areas.shape[0]>0 else False
-        while small_catchments_present:
-            stomp_id = small_areas.index[0]
-            print('stomping %d' % stomp_id)
-            river_obj.network = river_obj.network.set_index('id', drop=False)
-            # find the catchment that will absorb the small one
-            absorb_id = river_obj.network.loc[river_obj.network.id==stomp_id, 'dwn_id'].values
-            # find the upstream catchments that drain into the small one
-            upstream_ids = river_obj.network.loc[river_obj.network.dwn_id==stomp_id, 'id'].values
-            
-            if len(absorb_id)==1:
-                absorb_id = absorb_id[0] # take as integer
-                print('absorbing into %d' % absorb_id)
-                
-                # merge linestrings for reaches of stomp_id and absorb_id        
-                new_reach_line = (river_obj.network.at[stomp_id, 'geometry']
-                    .union(river_obj.network.at[absorb_id, 'geometry'])
-                )
-                new_network = river_obj.network.copy()
-                new_network.at[absorb_id, 'geometry'] = multiline_to_single_line(new_reach_line)
-                
-                # update river.network so upstream_ids drain into absorb_id
-                for iu in upstream_ids:
-                    new_network.at[iu, 'dwn_id'] = absorb_id
-                new_network = new_network.drop(stomp_id)
-                river_obj.network = new_network
-                
-                # merge incremental catchment boundaries of absorb_id and stomp_id
-                new_boundary = (river_obj.boundaries_increm.at[stomp_id]
-                    .union(river_obj.boundaries_increm.at[absorb_id])
-                )
-                river_obj.boundaries_increm.at[absorb_id] = new_boundary
-                river_obj.boundaries_increm = river_obj.boundaries_increm.drop(stomp_id)
-                
-                # re-calculate incremental catchment descriptors for new merged catchment
-                river_obj.cds_increm = merge_incremental_catchment_descriptors(
-                    river_obj, stomp_id, absorb_id, desc_to_use
-                )
-            else:
-                # no catchment downstream to absorb small catchment,
-                # either leave as is or merge onto an upstream one?
-                # have to do something or loop will go on forever
-                # maybe filter out tidal catchments from the areas beforehand
-                pass
-            
-            small_areas = (river_obj.calculate_areas()
-                .drop(river_obj.river_id)
-                .sort_values('area')
-                .query(f'area < {area_threshold}')
-            )
-            small_catchments_present = True if small_areas.shape[0]>0 else False
-        return river_obj

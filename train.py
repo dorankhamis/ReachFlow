@@ -280,6 +280,7 @@ if __name__=="__main__":
     if False:
         ## test sampling an event and load up the river / data
         river_obj, rid, date_range, event = sample_event(flood_event_df, vwc_quantiles=vwc_quantiles)
+        river_obj.plot_river(stations=True)
         river_obj.plot_flows(river_obj.flow_est, date_range[1])
 
     ## train model

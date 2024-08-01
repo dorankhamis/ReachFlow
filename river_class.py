@@ -263,7 +263,8 @@ class River:
                       linewidth=0.7, alpha=0.9) 
                 for idx, i in enumerate(self.network.id)]
         if stations:
-            plt.plot(self.points_in_catchments.easting, self.points_in_catchments.northing, 'o')
+            plt.plot(self.points_in_catchments.easting, self.points_in_catchments.northing,
+                     'o', color='orange')
         # add parent cumulative catchment outline
         plt.plot(*self.boundaries_cumul.loc[self.river_id].exterior.xy,
                  '--', c='k', linewidth=1.5, alpha=0.8)
