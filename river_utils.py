@@ -203,11 +203,11 @@ def calculate_incremental_catchment_descriptors(draincells, segments, parent_idx
         'QB19', # BFIHOST19 [0,1]
         'QUEX', # URBEXT1990 Urban extent, [0,1]
         'QUE2', # URBEXT2000 Urban extent, [0,1]
-        'QFPX', # Mean flood plain extent, [0,1]
-        'QPRW', # PROPWET Proportion of time soils are wet, [0,1]
-        'QSPR', # Standard percentage runoff from HOST, % [0,100]        
+        #'QFPX', # Mean flood plain extent, [0,1]
+        #'QPRW', # PROPWET Proportion of time soils are wet, [0,1]
+        #'QSPR', # Standard percentage runoff from HOST, % [0,100]        
         'QDPS', # DPSBAR Mean drainage path slope, m/km ~ 0--400
-        'QFAR'  # FARL Flood attenuation by reservoirs and lakes, [0,1]
+        #'QFAR'  # FARL Flood attenuation by reservoirs and lakes, [0,1]
     '''
     if len(small_catchs)>0:
         if (cds_increment.QB19.values[0]<0) or (cds_increment.QB19.values[0]>1):
